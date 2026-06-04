@@ -1,0 +1,21 @@
+[package]
+name = "stuk-fenestra"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Stuk adapter for Fenestra CEF webview windows"
+
+[dependencies]
+pollster.workspace = true
+raw-window-handle.workspace = true
+serde_json.workspace = true
+stuk.workspace = true
+stuk-platform.workspace = true
+stuk-render.workspace = true
+stuk-style.workspace = true
+fenestra-runtime.workspace = true
+fenestra-cef.workspace = true
+thiserror.workspace = true
+winit.workspace = true
+x11rb.workspace = true
