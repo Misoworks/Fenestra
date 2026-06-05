@@ -200,7 +200,7 @@ impl OsrLayerHost {
                 }
                 self.ensure_child();
                 self.send_resize();
-                if self.visible {
+                if self.visible && self.main_frame.is_some() {
                     self.refresh_surface(state, id);
                 } else {
                     self.hide_surface(state);
@@ -299,7 +299,11 @@ impl OsrLayerHost {
                         OsrSurface::Main => self.main_frame = Some(frame),
                         OsrSurface::Popup => self.popup_frame = Some(frame),
                     }
-                    self.refresh_surface(state, id);
+                    if self.main_frame.is_some() {
+                        self.restore_keyboard(state);
+                        self.force_resume("first-paint");
+                        self.refresh_surface(state, id);
+                    }
                 }
             }
             LayerHostEvent::Message(OsrMessage::PaintBatch(batch)) => {
@@ -519,6 +523,11 @@ impl OsrLayerHost {
         if self.pointer_inside {
             self.forward_mouse_move(false);
         }
+        if self.main_frame.is_some() {
+            self.refresh_surface(state, None);
+        } else {
+            self.hide_surface(state);
+        }
     }
 
     fn hide_shell_surface(&mut self, state: &mut WindowState<()>) {
@@ -561,7 +570,7 @@ impl OsrLayerHost {
     }
 
     fn refresh_surface(&mut self, state: &mut WindowState<()>, id: Option<layershellev::id::Id>) {
-        if !self.visible {
+        if !self.visible || self.main_frame.is_none() {
             return;
         }
         let Some(file) = &self.buffer_file else {
@@ -597,6 +606,9 @@ impl OsrLayerHost {
         state: &mut WindowState<()>,
         id: Option<layershellev::id::Id>,
     ) {
+        if batch.surface == OsrSurface::Popup && self.main_frame.is_none() {
+            return;
+        }
         let Some(file) = &self.buffer_file else {
             return;
         };
@@ -635,6 +647,11 @@ impl OsrLayerHost {
                 self.popup_frame = absolute_frames.last().cloned();
             }
         }
+        if self.main_frame.is_none() {
+            return;
+        }
+        self.restore_keyboard(state);
+        self.force_resume("first-paint");
         if let Some(id) = id
             && let Some(unit) = state.get_unit_with_id(id)
         {

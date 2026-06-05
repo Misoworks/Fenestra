@@ -14,7 +14,6 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use stuk::prelude::*;
 use thiserror::Error;
 use winit::{
     application::ApplicationHandler,
@@ -110,6 +109,7 @@ pub struct WebViewConfig {
     pub resizable: bool,
     pub visible: bool,
     pub active: bool,
+    pub hide_on_blur: bool,
     pub always_on_top: bool,
     pub material: Material,
     pub chrome: WindowChrome,
@@ -144,6 +144,7 @@ impl Default for WebViewConfig {
             resizable: true,
             visible: true,
             active: true,
+            hide_on_blur: false,
             always_on_top: false,
             material: Material::Maris,
             chrome: WindowChrome::System,
@@ -524,6 +525,11 @@ impl WebViewWindow {
         self
     }
 
+    pub fn hide_on_blur(mut self, enabled: bool) -> Self {
+        self.config.hide_on_blur = enabled;
+        self
+    }
+
     pub fn always_on_top(mut self, always_on_top: bool) -> Self {
         self.config.always_on_top = always_on_top;
         self
@@ -846,6 +852,7 @@ impl WebViewWindow {
             resizable: config.resizable,
             visible: config.visible,
             active: config.active,
+            hide_on_blur: config.hide_on_blur,
             always_on_top: config.always_on_top,
             transparent: config.transparent,
             frameless: config.frameless || !cef_chrome.uses_native_decorations(),
@@ -948,12 +955,7 @@ impl WebViewWindow {
 }
 
 pub fn run_installing_window_from_args(args: &[String]) -> bool {
-    let Some(index) = args.iter().position(|arg| arg == INSTALLING_WINDOW_ARG) else {
-        return false;
-    };
-    let status_path = args.get(index + 1).map(PathBuf::from);
-    run_installing_window(status_path);
-    true
+    args.iter().any(|arg| arg == INSTALLING_WINDOW_ARG)
 }
 
 pub fn run_native_host_from_args(args: &[String]) -> bool {
@@ -1147,167 +1149,7 @@ pub fn resolve_or_install_runtime(
 fn install_runtime_with_window(
     config: &RuntimeConfig,
 ) -> std::result::Result<RuntimeInfo, RuntimeError> {
-    let status_path = std::env::temp_dir().join(format!(
-        "fenestra-runtime-install-{}.status",
-        std::process::id()
-    ));
-    write_install_status(
-        &status_path,
-        &RuntimeInstallProgress::new(
-            RuntimeInstallStep::Preparing,
-            None,
-            "Preparing shared web runtime",
-        ),
-    );
-    let mut status_window = std::env::current_exe().ok().and_then(|exe| {
-        Command::new(exe)
-            .arg(INSTALLING_WINDOW_ARG)
-            .arg(&status_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .ok()
-    });
-
-    let result = install_user_runtime_with_progress(config, |progress| {
-        write_install_status(&status_path, &progress);
-    });
-
-    if let Some(child) = status_window.as_mut() {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    let _ = std::fs::remove_file(status_path);
-
-    result
-}
-
-fn run_installing_window(status_path: Option<PathBuf>) {
-    if let Err(error) = App::new()
-        .id("dev.stuk.webview.installing")
-        .name("Installing dependencies")
-        .window(InstallingWindow { status_path })
-        .run()
-    {
-        eprintln!("failed to show installing window: {error}");
-        std::process::exit(1);
-    }
-}
-
-struct InstallingWindow {
-    status_path: Option<PathBuf>,
-}
-
-impl View for InstallingWindow {
-    fn view(&self, _cx: &mut Cx) -> stuk::Element {
-        let status = self.status();
-        Window::new()
-            .title("Stuk")
-            .size(460, 210)
-            .glass()
-            .continuous_redraw(true)
-            .content(
-                Center::new(
-                    Flex::column()
-                        .gap(8.0)
-                        .align(FlexAlign::Center)
-                        .child(
-                            Frame::new(
-                                Text::new("Installing required dependencies")
-                                    .size(22.0)
-                                    .balance()
-                                    .centered(),
-                            )
-                            .width(390.0),
-                        )
-                        .child(
-                            Frame::new(
-                                Text::new("Preparing the shared web runtime for this app.")
-                                    .muted()
-                                    .pretty()
-                                    .centered(),
-                            )
-                            .width(360.0),
-                        )
-                        .child(
-                            Frame::new(
-                                ProgressBar::new(status.progress * 100.0, 100.0)
-                                    .label(status.message.clone())
-                                    .color(Color::rgb(0.78, 0.78, 0.78)),
-                            )
-                            .width(260.0),
-                        )
-                        .width(390.0),
-                )
-                .padding(28.0),
-            )
-            .into()
-    }
-}
-
-impl InstallingWindow {
-    fn status(&self) -> InstallStatus {
-        self.status_path
-            .as_deref()
-            .and_then(read_install_status)
-            .unwrap_or_default()
-    }
-}
-
-#[derive(Clone, Debug)]
-struct InstallStatus {
-    progress: f32,
-    message: String,
-}
-
-impl Default for InstallStatus {
-    fn default() -> Self {
-        Self {
-            progress: 0.0,
-            message: "Preparing shared web runtime".to_string(),
-        }
-    }
-}
-
-fn write_install_status(path: &Path, progress: &RuntimeInstallProgress) {
-    let fraction = progress.fraction.unwrap_or(match progress.step {
-        RuntimeInstallStep::Preparing => 0.05,
-        RuntimeInstallStep::RemovingOldRuntime => 0.10,
-        RuntimeInstallStep::Downloading => 0.20,
-        RuntimeInstallStep::Verifying => 0.72,
-        RuntimeInstallStep::Extracting => 0.84,
-        RuntimeInstallStep::Installing => 0.94,
-        RuntimeInstallStep::Complete => 1.0,
-    });
-    let body = format!(
-        "{:?}\n{}\n{}\n",
-        progress.step,
-        fraction,
-        progress.message.replace('\n', " ")
-    );
-    let _ = std::fs::write(path, body);
-}
-
-fn read_install_status(path: &Path) -> Option<InstallStatus> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let mut lines = text.lines();
-    let _step = match lines.next()? {
-        "Preparing" => RuntimeInstallStep::Preparing,
-        "RemovingOldRuntime" => RuntimeInstallStep::RemovingOldRuntime,
-        "Downloading" => RuntimeInstallStep::Downloading,
-        "Verifying" => RuntimeInstallStep::Verifying,
-        "Extracting" => RuntimeInstallStep::Extracting,
-        "Installing" => RuntimeInstallStep::Installing,
-        "Complete" => RuntimeInstallStep::Complete,
-        _ => RuntimeInstallStep::Preparing,
-    };
-    let progress = lines.next()?.parse::<f32>().ok()?.clamp(0.0, 1.0);
-    let message = lines
-        .next()
-        .unwrap_or("Preparing shared web runtime")
-        .to_string();
-    Some(InstallStatus { progress, message })
+    install_user_runtime_with_progress(config, |_| {})
 }
 
 fn launch_native_host_process(

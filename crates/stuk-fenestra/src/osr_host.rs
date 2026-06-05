@@ -427,7 +427,9 @@ impl OsrNativeHost {
                 }
             }
         }
-        if let Some(window) = &self.window {
+        if self.presented
+            && let Some(window) = &self.window
+        {
             window.request_redraw();
         }
     }
@@ -495,12 +497,16 @@ impl OsrNativeHost {
     }
 
     fn display_list(&self, width: f32, height: f32) -> DisplayList {
-        let background = if self.config.transparent {
+        let ready = self.main_frame.is_some();
+        let background = if !ready || self.config.transparent {
             Color::rgba(0.0, 0.0, 0.0, 0.0)
         } else {
             Color::WINDOW
         };
         let mut list = DisplayList::new(background);
+        if !ready {
+            return list;
+        }
         if !self.config.transparent || uses_stuk_chrome(self.config.chrome) {
             let radius = if self.config.chrome.uses_native_decorations() {
                 0.0
@@ -746,7 +752,8 @@ impl ApplicationHandler for OsrNativeHost {
             } => {
                 self.send_key_event(&event);
             }
-            WindowEvent::RedrawRequested => self.render(),
+            WindowEvent::RedrawRequested if self.config.visible && self.presented => self.render(),
+            WindowEvent::RedrawRequested => {}
             WindowEvent::PointerMoved {
                 position, primary, ..
             } if primary => {
@@ -1123,21 +1130,6 @@ fn uses_stuk_chrome(chrome: WindowChrome) -> bool {
 }
 
 fn can_defer_window_visibility() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        let backend = std::env::var("WINIT_UNIX_BACKEND")
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if backend == "wayland" {
-            return false;
-        }
-        if backend == "x11" {
-            return true;
-        }
-        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-            return false;
-        }
-    }
     true
 }
 

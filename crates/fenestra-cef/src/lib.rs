@@ -84,6 +84,7 @@ pub struct CefConfig {
     pub resizable: bool,
     pub visible: bool,
     pub active: bool,
+    pub hide_on_blur: bool,
     pub always_on_top: bool,
     pub transparent: bool,
     pub frameless: bool,
@@ -116,6 +117,7 @@ impl Default for CefConfig {
             resizable: true,
             visible: true,
             active: true,
+            hide_on_blur: false,
             always_on_top: false,
             transparent: false,
             frameless: false,
@@ -311,27 +313,27 @@ impl CefProcess {
     }
 
     pub fn set_visible(&self, visible: bool) -> bool {
-        self.bridge_emitter.as_ref().is_some_and(|emitter| {
-            emitter.emit_host_control("visible", if visible { "1" } else { "0" })
-        })
+        self.bridge_emitter
+            .as_ref()
+            .is_some_and(|emitter| emitter.set_visible(visible))
     }
 
     pub fn show(&self) -> bool {
         self.bridge_emitter
             .as_ref()
-            .is_some_and(|emitter| emitter.emit_host_control("show", "1"))
+            .is_some_and(BridgeEventEmitter::show)
     }
 
     pub fn hide(&self) -> bool {
         self.bridge_emitter
             .as_ref()
-            .is_some_and(|emitter| emitter.emit_host_control("hide", "1"))
+            .is_some_and(BridgeEventEmitter::hide)
     }
 
     pub fn focus_window(&self) -> bool {
         self.bridge_emitter
             .as_ref()
-            .is_some_and(|emitter| emitter.emit_host_control("focus", "1"))
+            .is_some_and(BridgeEventEmitter::focus_window)
     }
 
     pub fn bridge_event_emitter(&self) -> Option<BridgeEventEmitter> {
@@ -405,6 +407,22 @@ impl BridgeEventEmitter {
             payload,
         };
         self.write_line(event)
+    }
+
+    pub fn set_visible(&self, visible: bool) -> bool {
+        self.emit_host_control("visible", if visible { "1" } else { "0" })
+    }
+
+    pub fn show(&self) -> bool {
+        self.emit_host_control("show", "1")
+    }
+
+    pub fn hide(&self) -> bool {
+        self.emit_host_control("hide", "1")
+    }
+
+    pub fn focus_window(&self) -> bool {
+        self.emit_host_control("focus", "1")
     }
 
     fn emit_host_control(&self, command: &str, value: &str) -> bool {
@@ -538,6 +556,11 @@ impl CefWindow {
 
     pub fn active(mut self, active: bool) -> Self {
         self.config.active = active;
+        self
+    }
+
+    pub fn hide_on_blur(mut self, enabled: bool) -> Self {
+        self.config.hide_on_blur = enabled;
         self
     }
 

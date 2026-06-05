@@ -44,15 +44,15 @@ cargo run -p stuk-notes
 Create a standalone app:
 
 ```sh
-cargo run -p fenestra -- new my-notes
+cargo run -p fenestra-cli --bin fenestra -- new my-notes
 ```
 
 Register a source checkout as a local desktop app:
 
 ```sh
-cargo run -p fenestra -- install .
-cargo run -p fenestra -- install . --autostart
-cargo run -p fenestra -- update --all
+cargo run -p fenestra-cli --bin fenestra -- install .
+cargo run -p fenestra-cli --bin fenestra -- install . --autostart
+cargo run -p fenestra-cli --bin fenestra -- update --all
 ```
 
 Source installs are user-local. Fenestra writes launchers and registry records under
@@ -60,6 +60,49 @@ Source installs are user-local. Fenestra writes launchers and registry records u
 `~/.local/share/applications/`. Passing `--autostart` also writes an autostart entry under
 `~/.config/autostart/`. Updating a registered git checkout runs `git pull --ff-only` and refreshes
 the launcher metadata.
+
+## Bundles
+
+Fenestra can build the web assets, build the Rust desktop host, stage the app, and produce unsigned
+desktop packages:
+
+```sh
+cargo run -p fenestra-cli --bin fenestra -- bundle . --target portable
+cargo run -p fenestra-cli --bin fenestra -- bundle . --target deb --release
+cargo run -p fenestra-cli --bin fenestra -- bundle . --target appimage
+cargo run -p fenestra-cli --bin fenestra -- bundle . --target dmg --binary target/aarch64-apple-darwin/release/my-app
+cargo run -p fenestra-cli --bin fenestra -- bundle . --target msi --binary target/x86_64-pc-windows-msvc/release/my-app.exe
+```
+
+Targets are `portable`, `linux`, `deb`, `rpm`, `appimage`, `windows`, `exe`, `msi`, `macos`, and
+`dmg`. Fenestra can stage every target on one host and will run local packaging tools when they are
+available: `tar`, `dpkg-deb`, `appimagetool`, `hdiutil`, WiX, or NSIS. When a native packaging tool
+is not available, Fenestra leaves the staged app tree plus the manifest or build script needed to
+finish that package on the right machine.
+
+Cross-host packaging is supported at the staging layer. Fully native binaries, code signing,
+notarization, and installer signing still need the relevant platform toolchain and credentials. Use
+`--binary` to package an executable that was built elsewhere or by a custom cross-compile step.
+
+Web builds run before the Rust build unless `--no-web-build` is passed. Fenestra auto-detects Vite
+and other package builds from `ui/package.json`, `frontend/package.json`, `web/package.json`, or
+`package.json`. Bun is preferred when a Bun lockfile or `packageManager = "bun@..."` is present.
+
+Projects can make bundling explicit with `Fenestra.toml`:
+
+```toml
+[app]
+id = "com.example.notes"
+name = "Notes"
+version = "0.1.0"
+icon = "assets/icon.png"
+
+[web]
+root = "ui"
+dist = "ui/dist"
+entry = "ui/dist/index.html"
+build = "bun run build"
+```
 
 ## Desktop Services
 

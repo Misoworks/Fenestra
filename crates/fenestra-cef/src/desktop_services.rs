@@ -328,15 +328,16 @@ async fn ensure_portal_app_registration(
         return Ok(());
     };
     if let Some(command) = registration.desktop_command.as_deref() {
+        let app_name = registration
+            .app_name
+            .as_deref()
+            .or(registration.description.as_deref())
+            .unwrap_or(app_id);
         write_file(
             data_home()?
                 .join("applications")
                 .join(format!("{}.desktop", sanitize_desktop_id(app_id))),
-            &desktop_entry(
-                app_id,
-                registration.description.as_deref().unwrap_or(app_id),
-                command,
-            ),
+            &desktop_entry(app_id, app_name, command),
         )?;
     }
     let app_id = ashpd::AppID::try_from(app_id)?;

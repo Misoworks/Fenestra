@@ -1,9 +1,11 @@
+mod bundle;
 mod runtime;
 mod source_install;
 mod template;
 
 use std::{path::PathBuf, process::ExitCode};
 
+use bundle::BundleOptions;
 use clap::{Parser, Subcommand};
 use runtime::RuntimeCommand;
 use source_install::{InstallOptions, UpdateOptions};
@@ -44,6 +46,36 @@ enum Command {
         target: Option<String>,
         #[arg(long)]
         all: bool,
+    },
+    Bundle {
+        #[arg(default_value = ".")]
+        source: PathBuf,
+        #[arg(long, default_value = "linux")]
+        target: String,
+        #[arg(long, default_value = "dist")]
+        out: PathBuf,
+        #[arg(long)]
+        release: bool,
+        #[arg(long)]
+        no_build: bool,
+        #[arg(long)]
+        binary: Option<PathBuf>,
+        #[arg(long)]
+        no_web_build: bool,
+        #[arg(long)]
+        web_build: Option<String>,
+        #[arg(long)]
+        web_root: Option<PathBuf>,
+        #[arg(long)]
+        web_dist: Option<PathBuf>,
+        #[arg(long)]
+        id: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -135,5 +167,42 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Command::Bundle {
+            source,
+            target,
+            out,
+            release,
+            no_build,
+            binary,
+            no_web_build,
+            web_build,
+            web_root,
+            web_dist,
+            id,
+            name,
+            version,
+            json,
+        } => match bundle::bundle(BundleOptions {
+            source,
+            target,
+            out,
+            release,
+            no_build,
+            binary,
+            no_web_build,
+            web_build,
+            web_root,
+            web_dist,
+            id,
+            name,
+            version,
+            json,
+        }) {
+            Ok(code) => code,
+            Err(error) => {
+                eprintln!("{error}");
+                ExitCode::from(1)
+            }
+        },
     }
 }

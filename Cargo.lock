@@ -891,6 +891,9 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "fenestra-runtime",
+ "serde",
+ "serde_json",
+ "toml",
 ]
 
 [[package]]

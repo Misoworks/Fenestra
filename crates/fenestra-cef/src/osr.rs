@@ -56,6 +56,7 @@ pub(crate) fn launch_process(
             "resizable": config.resizable,
             "visible": config.visible,
             "active": config.active,
+            "hide_on_blur": config.hide_on_blur,
             "always_on_top": config.always_on_top,
             "transparent": config.transparent,
             "shell_surface": crate::osr_protocol::shell_surface_to_json(config.shell_surface.as_ref()),
