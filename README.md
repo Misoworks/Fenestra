@@ -233,3 +233,15 @@ window.fenestra.window.hide();
 
 These calls are host controls, not bridge commands, so they work even when the app exposes no native
 command surface.
+
+## License
+
+Fenestra is licensed under either of:
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT License ([LICENSE-MIT](LICENSE-MIT))
+
+at your option.
+
+CEF/Chromium runtimes carry their own licenses and notices. See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for release packaging notes.
