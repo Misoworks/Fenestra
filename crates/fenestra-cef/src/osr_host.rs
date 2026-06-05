@@ -397,6 +397,12 @@ impl OsrNativeHost {
             .window
             .as_ref()
             .map_or(1.0, |window| window.scale_factor());
+        if !self.config.visible
+            && self.window.is_none()
+            && self.config.lifecycle.hibernate_after.is_some()
+        {
+            return (1, 1, scale);
+        }
         let logical_width = f64::from(self.surface_size.width) / scale.max(1.0);
         let logical_height = (f64::from(self.surface_size.height) / scale.max(1.0)
             - f64::from(self.titlebar_height()))
@@ -542,8 +548,8 @@ impl OsrNativeHost {
         self.socket = None;
         self.main_frame = None;
         self.popup_frame = None;
-        self.main_buffer.clear();
-        self.popup_buffer.clear();
+        self.main_buffer.release();
+        self.popup_buffer.release();
         self.hibernate_commit_deadline = None;
         self.lifecycle_state = LifecycleState::Hibernated;
         if self.config.visible
@@ -609,7 +615,7 @@ impl OsrNativeHost {
                 }
                 OsrHostEvent::Message(OsrMessage::PopupHidden) => {
                     self.popup_frame = None;
-                    self.popup_buffer.clear();
+                    self.popup_buffer.release();
                     needs_redraw = true;
                 }
                 OsrHostEvent::Message(OsrMessage::Cursor(cursor)) => {
@@ -705,7 +711,7 @@ impl OsrNativeHost {
         self.config.visible = false;
         self.focused = false;
         self.popup_frame = None;
-        self.popup_buffer.clear();
+        self.popup_buffer.release();
         self.send_control("focus\t0\n");
         if let Some(window) = &self.window {
             window.set_visible(false);
@@ -1162,6 +1168,10 @@ impl OsrNativeHost {
         self.presented = false;
         self.hovered_control = None;
         self.cursor = CursorIcon::Default;
+        self.main_frame = None;
+        self.popup_frame = None;
+        self.main_buffer.release();
+        self.popup_buffer.release();
     }
 
     fn upload_cached_textures(&mut self) {

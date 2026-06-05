@@ -513,6 +513,9 @@ impl WebViewWindow {
 
     pub fn visible(mut self, visible: bool) -> Self {
         self.config.visible = visible;
+        if !visible {
+            self.apply_hidden_lifecycle_defaults();
+        }
         self
     }
 
@@ -527,6 +530,9 @@ impl WebViewWindow {
 
     pub fn hide_on_blur(mut self, enabled: bool) -> Self {
         self.config.hide_on_blur = enabled;
+        if enabled {
+            self.apply_hidden_lifecycle_defaults();
+        }
         self
     }
 
@@ -724,6 +730,16 @@ impl WebViewWindow {
     pub fn disable_hibernation(mut self) -> Self {
         self.config.lifecycle.hibernate_after = None;
         self
+    }
+
+    fn apply_hidden_lifecycle_defaults(&mut self) {
+        self.config.lifecycle.suspend_on_blur = true;
+        self.config.lifecycle.background_frame_rate = 1;
+        self.config.lifecycle.hibernate_grace = self
+            .config
+            .lifecycle
+            .hibernate_grace
+            .min(Duration::from_millis(150));
     }
 
     pub fn security(mut self, security: WebViewSecurity) -> Self {
@@ -3002,6 +3018,15 @@ mod tests {
             window.config.lifecycle.hibernate_after,
             Some(Duration::from_secs(30))
         );
+    }
+
+    #[test]
+    fn hidden_webview_uses_hidden_lifecycle_defaults() {
+        let window = WebViewWindow::new().hidden();
+        assert!(!window.config.visible);
+        assert_eq!(window.config.lifecycle.background_frame_rate, 1);
+        assert!(window.config.lifecycle.suspend_on_blur);
+        assert_eq!(window.config.lifecycle.hibernate_after, None);
     }
 
     #[test]

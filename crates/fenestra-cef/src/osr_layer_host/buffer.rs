@@ -100,6 +100,11 @@ pub(super) fn paint_frames_buffer_file(
         return Ok(DamageRect::full(width, height));
     }
 
+    if !scratch.is_empty() {
+        scratch.clear();
+        scratch.shrink_to_fit();
+    }
+
     let damage = damage.unwrap_or_else(|| DamageRect::full(width, height));
     if damage.is_full(width, height) {
         write_full(file, main_buffer)?;

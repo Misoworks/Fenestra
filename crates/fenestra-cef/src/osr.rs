@@ -155,13 +155,9 @@ pub(crate) fn cef_osr_command(
         .arg(format!(
             "--cache-path={}",
             cache_dir.join("browser").display()
-        ))
-        .arg("--ozone-platform=wayland")
-        .arg("--enable-features=UseOzonePlatform")
-        .arg("--disable-features=Vulkan,DefaultANGLEVulkan,VulkanFromANGLE,OptimizationGuideOnDeviceModel")
-        .arg("--disable-vulkan")
-        .arg("--disable-gpu")
-        .arg("--password-store=basic")
+        ));
+    crate::apply_common_cef_args(&mut command);
+    command
         .current_dir(&release_dir)
         .env("GDK_BACKEND", "wayland")
         .env("XDG_SESSION_TYPE", "wayland")

@@ -161,6 +161,10 @@ fenestra runtime remove cef 126.2.7 --package standard
 Fenestra keeps browser profiles and CEF root cache paths outside the shared runtime installation.
 That keeps concurrent apps isolated while sharing binaries and OS page cache.
 
+CEF hosts are launched with app-runtime defaults: Wayland/Ozone first on Linux, Vulkan disabled, and
+non-app browser services such as sync, translate, media routing, extensions, crash uploading,
+component updates, and background networking disabled.
+
 ## Performance Diagnostics
 
 Set `FENESTRA_TRACE=1` to print launch and OSR lifecycle timings:
@@ -220,8 +224,15 @@ process.focus_window();
 process.hide();
 ```
 
-Hidden OSR windows enter the suspended lifecycle immediately. They resume when shown or focused, and
-can still hard-hibernate later if the lifecycle policy enables it.
+Hidden OSR windows enter the suspended lifecycle immediately and stay warm by default so palettes can
+show instantly. They resume when shown or focused. To trade instant resume for lower hidden memory,
+opt into hibernation explicitly:
+
+```rust
+CefWindow::new()
+    .hidden()
+    .lifecycle_policy(CefLifecyclePolicy::memory_saver_hidden_window());
+```
 
 The same controls are available in web content:
 

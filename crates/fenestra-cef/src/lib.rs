@@ -53,6 +53,39 @@ use thiserror::Error;
 use winit::{dpi::PhysicalPosition, event_loop::ActiveEventLoop};
 
 pub(crate) const HOST_CONTROL_PREFIX: &str = "FENESTRA_HOST_CONTROL";
+pub(crate) const DISABLED_CEF_FEATURES: &str = concat!(
+    "Vulkan,",
+    "DefaultANGLEVulkan,",
+    "VulkanFromANGLE,",
+    "OptimizationGuideOnDeviceModel,",
+    "AutofillServerCommunication,",
+    "MediaRouter,",
+    "Translate,",
+    "InterestFeedContentSuggestions"
+);
+
+pub(crate) fn apply_common_cef_args(command: &mut Command) {
+    command
+        .arg("--ozone-platform=wayland")
+        .arg("--enable-features=UseOzonePlatform")
+        .arg(format!("--disable-features={DISABLED_CEF_FEATURES}"))
+        .arg("--disable-vulkan")
+        .arg("--disable-gpu")
+        .arg("--disable-background-networking")
+        .arg("--disable-component-update")
+        .arg("--disable-component-extensions-with-background-pages")
+        .arg("--disable-default-apps")
+        .arg("--disable-domain-reliability")
+        .arg("--disable-extensions")
+        .arg("--disable-sync")
+        .arg("--disable-translate")
+        .arg("--disable-breakpad")
+        .arg("--disable-crash-reporter")
+        .arg("--metrics-recording-only")
+        .arg("--no-default-browser-check")
+        .arg("--no-first-run")
+        .arg("--password-store=basic");
+}
 
 #[derive(Debug, Error)]
 pub enum CefError {
@@ -168,6 +201,22 @@ impl CefLifecyclePolicy {
             suspend_on_blur: true,
             hibernate_after: Some(Duration::from_secs(300)),
             ..Self::default()
+        }
+    }
+
+    pub fn hidden_window() -> Self {
+        Self {
+            background_frame_rate: 1,
+            suspend_on_blur: true,
+            hibernate_grace: Duration::from_millis(150),
+            ..Self::default()
+        }
+    }
+
+    pub fn memory_saver_hidden_window() -> Self {
+        Self {
+            hibernate_after: Some(Duration::from_secs(5)),
+            ..Self::hidden_window()
         }
     }
 
@@ -547,6 +596,9 @@ impl CefWindow {
 
     pub fn visible(mut self, visible: bool) -> Self {
         self.config.visible = visible;
+        if !visible {
+            self.apply_hidden_lifecycle_defaults();
+        }
         self
     }
 
@@ -561,6 +613,9 @@ impl CefWindow {
 
     pub fn hide_on_blur(mut self, enabled: bool) -> Self {
         self.config.hide_on_blur = enabled;
+        if enabled {
+            self.apply_hidden_lifecycle_defaults();
+        }
         self
     }
 
@@ -771,6 +826,16 @@ impl CefWindow {
     pub fn disable_hibernation(mut self) -> Self {
         self.config.lifecycle.hibernate_after = None;
         self
+    }
+
+    fn apply_hidden_lifecycle_defaults(&mut self) {
+        self.config.lifecycle.suspend_on_blur = true;
+        self.config.lifecycle.background_frame_rate = 1;
+        self.config.lifecycle.hibernate_grace = self
+            .config
+            .lifecycle
+            .hibernate_grace
+            .min(Duration::from_millis(150));
     }
 
     pub fn runtime(mut self, runtime: RuntimeConfig) -> Self {
@@ -1144,13 +1209,9 @@ fn cef_window_command(
         .arg(format!(
             "--cache-path={}",
             cache_dir.join("browser").display()
-        ))
-        .arg("--ozone-platform=wayland")
-        .arg("--enable-features=UseOzonePlatform")
-        .arg("--disable-features=Vulkan,DefaultANGLEVulkan,VulkanFromANGLE,OptimizationGuideOnDeviceModel")
-        .arg("--disable-vulkan")
-        .arg("--disable-gpu")
-        .arg("--password-store=basic")
+        ));
+    apply_common_cef_args(&mut command);
+    command
         .current_dir(&release_dir)
         .env("GDK_BACKEND", "wayland")
         .env("XDG_SESSION_TYPE", "wayland")
@@ -1526,5 +1587,37 @@ fn format_url_host(host: &str) -> String {
         format!("[{host}]")
     } else {
         host.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hidden_window_lifecycle_is_palette_biased() {
+        let lifecycle = CefLifecyclePolicy::hidden_window();
+        assert_eq!(lifecycle.background_frame_rate, 1);
+        assert!(lifecycle.suspend_on_blur);
+        assert_eq!(lifecycle.hibernate_after, None);
+        assert_eq!(lifecycle.hibernate_grace, Duration::from_millis(150));
+    }
+
+    #[test]
+    fn memory_saver_hidden_window_hibernates_quickly() {
+        let lifecycle = CefLifecyclePolicy::memory_saver_hidden_window();
+        assert_eq!(lifecycle.background_frame_rate, 1);
+        assert!(lifecycle.suspend_on_blur);
+        assert_eq!(lifecycle.hibernate_after, Some(Duration::from_secs(5)));
+        assert_eq!(lifecycle.hibernate_grace, Duration::from_millis(150));
+    }
+
+    #[test]
+    fn hidden_builder_uses_hidden_lifecycle_defaults() {
+        let window = CefWindow::new().hidden();
+        assert!(!window.config.visible);
+        assert_eq!(window.config.lifecycle.background_frame_rate, 1);
+        assert!(window.config.lifecycle.suspend_on_blur);
+        assert_eq!(window.config.lifecycle.hibernate_after, None);
     }
 }

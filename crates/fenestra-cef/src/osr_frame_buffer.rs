@@ -23,10 +23,10 @@ impl FrameBuffer {
         }
     }
 
-    pub(crate) fn clear(&mut self) {
+    pub(crate) fn release(&mut self) {
         self.width = 0;
         self.height = 0;
-        self.bytes.clear();
+        self.bytes = Vec::new();
     }
 
     pub(crate) fn compose(
