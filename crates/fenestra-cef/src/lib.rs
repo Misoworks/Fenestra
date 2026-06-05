@@ -1,6 +1,7 @@
 mod bridge;
 mod desktop_services;
 mod host;
+mod metrics;
 mod osr;
 mod osr_frame_buffer;
 mod osr_host;
@@ -36,6 +37,8 @@ pub use fenestra_runtime::{
     install_user_runtime_with_progress, resolve_runtime, user_runtime_path,
 };
 pub use host::{ensure_cef_host, ld_library_path, webview_cache_dir};
+use metrics::LaunchMetrics;
+pub use metrics::{CefLaunchMetric, CefLaunchMetricsSnapshot, FENESTRA_TRACE_ENV};
 use process_tree::{ManagedChild, prepare_child_command};
 pub use stuk_platform::{
     AutostartEntry, DeepLinkRegistration, GlobalShortcutRegistration, NativeMessagingHost,
@@ -72,6 +75,7 @@ pub struct CefConfig {
     pub entry: Option<String>,
     pub dev_url: Option<String>,
     pub dev_command: Option<String>,
+    pub app_id: Option<String>,
     pub title: String,
     pub width: u32,
     pub height: u32,
@@ -103,6 +107,7 @@ impl Default for CefConfig {
             entry: None,
             dev_url: None,
             dev_command: None,
+            app_id: None,
             title: "Fenestra".to_string(),
             width: 900,
             height: 640,
@@ -182,6 +187,7 @@ pub struct DesktopServiceConfig {
     pub global_shortcuts: Vec<GlobalShortcutRegistration>,
     pub deep_links: Vec<DeepLinkRegistration>,
     pub native_messaging_hosts: Vec<NativeMessagingHost>,
+    pub single_instance_id: Option<String>,
     pub single_instance_policy: Option<SingleInstancePolicy>,
 }
 
@@ -271,6 +277,7 @@ pub struct CefProcess {
     desktop_services: Option<LinuxDesktopServiceState>,
     desktop_event_thread: Option<JoinHandle<()>>,
     desktop_event_running: Option<Arc<AtomicBool>>,
+    metrics: LaunchMetrics,
 }
 
 impl CefProcess {
@@ -329,6 +336,10 @@ impl CefProcess {
 
     pub fn bridge_event_emitter(&self) -> Option<BridgeEventEmitter> {
         self.bridge_emitter.clone()
+    }
+
+    pub fn metrics(&self) -> CefLaunchMetricsSnapshot {
+        self.metrics.snapshot()
     }
 
     fn start_desktop_event_forwarder(&mut self) {
@@ -482,6 +493,11 @@ impl CefWindow {
 
     pub fn title(mut self, title: impl Into<String>) -> Self {
         self.config.title = title.into();
+        self
+    }
+
+    pub fn app_id(mut self, app_id: impl Into<String>) -> Self {
+        self.config.app_id = Some(app_id.into());
         self
     }
 
@@ -689,6 +705,11 @@ impl CefWindow {
         self
     }
 
+    pub fn single_instance_id(mut self, id: impl Into<String>) -> Self {
+        self.config.desktop_services.single_instance_id = Some(id.into());
+        self
+    }
+
     pub fn lifecycle_policy(mut self, lifecycle: CefLifecyclePolicy) -> Self {
         self.config.lifecycle = lifecycle;
         self
@@ -818,6 +839,8 @@ impl CefWindow {
         }
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         {
+            let metrics = LaunchMetrics::new(metrics_label(&self.config));
+            metrics.mark("launch.start");
             #[cfg(target_os = "linux")]
             let desktop_services = Some(
                 apply_linux_desktop_services(
@@ -826,19 +849,22 @@ impl CefWindow {
                     &self.config.desktop_services.global_shortcuts,
                     &self.config.desktop_services.deep_links,
                     &self.config.desktop_services.native_messaging_hosts,
+                    self.config.desktop_services.single_instance_id.as_deref(),
                     self.config.desktop_services.single_instance_policy,
                 )
                 .map_err(|message| CefError::CreationFailed { message })?,
             );
             #[cfg(not(target_os = "linux"))]
             let desktop_services = None;
+            metrics.mark("desktop_services.ready");
             self.ensure_default_bridge_handlers();
-            let mut dev_server = self.start_dev_command()?;
+            let mut dev_server = self.start_dev_command(&metrics)?;
             let mut url = self.entry_url()?;
             match self.wait_for_dev_server(dev_server.as_mut(), &url) {
                 Ok(ready_url) => {
                     url = ready_url;
                     allow_dev_origins(&mut self.config.security, &url);
+                    metrics.mark("dev_server.ready");
                 }
                 Err(error) => {
                     if let Some(child) = dev_server {
@@ -853,6 +879,7 @@ impl CefWindow {
                     &self.config,
                     &self.bridge_handlers,
                     &url,
+                    metrics.clone(),
                 )?
             } else {
                 launch_cef_host(
@@ -860,18 +887,21 @@ impl CefWindow {
                     &self.config,
                     &self.bridge_handlers,
                     &url,
+                    metrics.clone(),
                 )?
             };
             if let Some(dev_server) = dev_server {
+                metrics.mark("dev_server.attached");
                 process.sidecars.push(ManagedChild::new(dev_server));
             }
             process.desktop_services = desktop_services;
             process.start_desktop_event_forwarder();
+            metrics.mark("launch.ready");
             Ok(process)
         }
     }
 
-    fn start_dev_command(&self) -> CefResult<Option<Child>> {
+    fn start_dev_command(&self, metrics: &LaunchMetrics) -> CefResult<Option<Child>> {
         let Some(command) = &self.config.dev_command else {
             return Ok(None);
         };
@@ -884,12 +914,11 @@ impl CefWindow {
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
-        process
-            .spawn()
-            .map(Some)
-            .map_err(|error| CefError::CreationFailed {
-                message: format!("failed to start dev command `{command}`: {error}"),
-            })
+        let child = process.spawn().map_err(|error| CefError::CreationFailed {
+            message: format!("failed to start dev command `{command}`: {error}"),
+        })?;
+        metrics.mark("dev_command.spawned");
+        Ok(Some(child))
     }
 
     fn wait_for_dev_server(
@@ -1008,15 +1037,18 @@ fn launch_cef_host(
     config: &CefConfig,
     bridge_handlers: &BridgeHandlers,
     url: &str,
+    metrics: LaunchMetrics,
 ) -> CefResult<CefProcess> {
     let host_binary = host::ensure_cef_host(runtime_dir)
         .map_err(|message| CefError::CreationFailed { message })?;
+    metrics.mark("host.ready");
     let mut command = cef_window_command(runtime_dir, &host_binary, config, url)?;
     prepare_bridge_command(&mut command, bridge_handlers);
     prepare_child_command(&mut command);
     let mut child = command.spawn().map_err(|error| CefError::CreationFailed {
         message: error.to_string(),
     })?;
+    metrics.mark(format!("host.spawned.pid.{}", child.id()));
     let bridge_dispatch = spawn_bridge_dispatch(
         &mut child,
         bridge::BridgeRuntime::new(
@@ -1033,7 +1065,17 @@ fn launch_cef_host(
         desktop_services: None,
         desktop_event_thread: None,
         desktop_event_running: None,
+        metrics,
     })
+}
+
+fn metrics_label(config: &CefConfig) -> String {
+    config
+        .app_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(&config.title)
+        .to_string()
 }
 
 fn shell_command(command: &str) -> Command {

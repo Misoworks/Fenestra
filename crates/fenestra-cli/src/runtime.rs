@@ -1,8 +1,8 @@
 use std::process::ExitCode;
 
 use fenestra_runtime::{
-    RuntimeConfig, RuntimeEngine, detect_runtime, install_user_runtime, latest_install_plan,
-    resolve_runtime,
+    RuntimeConfig, RuntimeEngine, RuntimePackage, detect_runtime, install_user_runtime,
+    latest_install_plan, prune_user_runtimes, remove_user_runtime_version, resolve_runtime,
 };
 
 pub enum RuntimeCommand {
@@ -11,10 +11,17 @@ pub enum RuntimeCommand {
     },
     Install {
         engine: String,
+        package: String,
     },
     Remove {
         engine: String,
         version: Option<String>,
+        package: String,
+    },
+    Prune {
+        engine: String,
+        keep: usize,
+        package: String,
     },
     Doctor {
         json: bool,
@@ -24,8 +31,17 @@ pub enum RuntimeCommand {
 pub fn run_runtime(command: RuntimeCommand) -> ExitCode {
     match command {
         RuntimeCommand::List { json } => list_runtimes(json),
-        RuntimeCommand::Install { engine } => install_runtime(&engine),
-        RuntimeCommand::Remove { engine, version } => remove_runtime(&engine, version.as_deref()),
+        RuntimeCommand::Install { engine, package } => install_runtime(&engine, &package),
+        RuntimeCommand::Remove {
+            engine,
+            version,
+            package,
+        } => remove_runtime(&engine, version.as_deref(), &package),
+        RuntimeCommand::Prune {
+            engine,
+            keep,
+            package,
+        } => prune_runtime(&engine, keep, &package),
         RuntimeCommand::Doctor { json } => doctor_runtime(json),
     }
 }
@@ -44,8 +60,9 @@ fn list_runtimes(json: bool) -> ExitCode {
                     fenestra_runtime::RuntimeLocation::Bundled(_) => "bundled",
                 };
                 format!(
-                    "{{\"engine\":\"{}\",\"version\":\"{}\",\"location_type\":\"{}\",\"path\":\"{}\"}}",
+                    "{{\"engine\":\"{}\",\"package\":\"{}\",\"version\":\"{}\",\"location_type\":\"{}\",\"path\":\"{}\"}}",
                     r.engine.id(),
+                    r.package.as_str(),
                     r.version,
                     location_type,
                     r.location.path().display()
@@ -68,8 +85,9 @@ fn list_runtimes(json: bool) -> ExitCode {
                     fenestra_runtime::RuntimeLocation::Bundled(_) => "bundled",
                 };
                 println!(
-                    "  {} {} {} {}",
+                    "  {} {} {} {} {}",
                     runtime.version,
+                    runtime.package.as_str(),
                     location_type,
                     runtime.engine.id(),
                     runtime.location.path().display()
@@ -81,19 +99,13 @@ fn list_runtimes(json: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn install_runtime(engine: &str) -> ExitCode {
-    let Some(parsed_engine) = RuntimeEngine::parse(engine) else {
-        eprintln!("unknown engine `{engine}`; use cef");
+fn install_runtime(engine: &str, package: &str) -> ExitCode {
+    let Ok(config) = runtime_config(engine, package) else {
         return ExitCode::from(1);
-    };
-
-    let config = RuntimeConfig {
-        engine: parsed_engine,
-        ..RuntimeConfig::default()
     };
     if let Ok(runtime) = resolve_runtime(&config) {
         println!(
-            "A compatible {engine} runtime is already installed at {}.",
+            "A compatible {engine} {package} runtime is already installed at {}.",
             runtime.location.path().display()
         );
         return ExitCode::SUCCESS;
@@ -101,7 +113,11 @@ fn install_runtime(engine: &str) -> ExitCode {
 
     match latest_install_plan(&config) {
         Ok(plan) => {
-            println!("Installing required {engine} runtime {}.", plan.version);
+            println!(
+                "Installing required {engine} {} runtime {}.",
+                plan.package.as_str(),
+                plan.version
+            );
             println!("Download: {}", plan.url);
             println!("Destination: {}", plan.install_dir.display());
         }
@@ -114,7 +130,8 @@ fn install_runtime(engine: &str) -> ExitCode {
     match install_user_runtime(&config) {
         Ok(runtime) => {
             println!(
-                "Installed {engine} runtime {} at {}.",
+                "Installed {engine} {} runtime {} at {}.",
+                runtime.package.as_str(),
                 runtime.version,
                 runtime.location.path().display()
             );
@@ -127,20 +144,51 @@ fn install_runtime(engine: &str) -> ExitCode {
     }
 }
 
-fn remove_runtime(engine: &str, version: Option<&str>) -> ExitCode {
-    let Some(_parsed_engine) = RuntimeEngine::parse(engine) else {
-        eprintln!("unknown engine `{engine}`; use cef");
+fn remove_runtime(engine: &str, version: Option<&str>, package: &str) -> ExitCode {
+    let Ok(config) = runtime_config(engine, package) else {
         return ExitCode::from(1);
     };
 
-    if version.is_none() {
+    let Some(version) = version else {
         eprintln!("specify a version; run `fenestra runtime list` to see installed versions");
         return ExitCode::from(1);
-    }
+    };
 
-    println!("Runtime removal is not yet implemented.");
-    println!("Manually remove the runtime directory from ~/.local/share/fenestra/runtimes/");
-    ExitCode::from(1)
+    match remove_user_runtime_version(&config, version) {
+        Ok(true) => {
+            println!("Removed {engine} {package} runtime {version}.");
+            ExitCode::SUCCESS
+        }
+        Ok(false) => {
+            eprintln!("No user-local {engine} {package} runtime {version} found.");
+            ExitCode::from(1)
+        }
+        Err(error) => {
+            eprintln!("failed to remove {engine} {package} runtime {version}: {error}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn prune_runtime(engine: &str, keep: usize, package: &str) -> ExitCode {
+    let Ok(config) = runtime_config(engine, package) else {
+        return ExitCode::from(1);
+    };
+
+    match prune_user_runtimes(&config, keep) {
+        Ok(0) => {
+            println!("No stale {engine} {package} runtimes found.");
+            ExitCode::SUCCESS
+        }
+        Ok(removed) => {
+            println!("Removed {removed} stale {engine} {package} runtime(s).");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("failed to prune {engine} {package} runtimes: {error}");
+            ExitCode::from(1)
+        }
+    }
 }
 
 fn doctor_runtime(json: bool) -> ExitCode {
@@ -190,6 +238,23 @@ fn doctor_runtime(json: bool) -> ExitCode {
     } else {
         ExitCode::from(1)
     }
+}
+
+fn runtime_config(engine: &str, package: &str) -> Result<RuntimeConfig, ()> {
+    let Some(engine) = RuntimeEngine::parse(engine) else {
+        eprintln!("unknown engine `{engine}`; use cef");
+        return Err(());
+    };
+    let Some(package) = RuntimePackage::parse(package) else {
+        eprintln!("unknown runtime package `{package}`; use standard, client, or minimal");
+        return Err(());
+    };
+
+    Ok(RuntimeConfig {
+        engine,
+        package,
+        ..RuntimeConfig::default()
+    })
 }
 
 #[cfg(test)]

@@ -288,3 +288,111 @@ fn current_bridge_targets() -> &'static [&'static str] {
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     return &["mobile"];
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn command(name: &str) -> BridgeCommand {
+        BridgeCommand {
+            name: name.to_string(),
+            params: serde_json::json!({ "value": 1 }),
+            origin: Some("file:///tmp/index.html".to_string()),
+        }
+    }
+
+    #[test]
+    fn dispatches_registered_command() {
+        let mut handlers = BridgeHandlers::default();
+        handlers.register("notes.list", |command| {
+            Ok(BridgeResponse::json(
+                serde_json::json!({ "name": command.name }),
+            ))
+        });
+        let mut registry = BridgeRegistry::default();
+        registry.register("notes.list");
+        let runtime = BridgeRuntime::new(handlers, registry, WebViewSecurity::default());
+
+        let response = runtime.dispatch(command("notes.list")).unwrap();
+        assert_eq!(response.result["name"], "notes.list");
+    }
+
+    #[test]
+    fn rejects_command_without_handler() {
+        let handlers = BridgeHandlers::default();
+        let mut registry = BridgeRegistry::default();
+        registry.register("notes.list");
+        let runtime = BridgeRuntime::new(handlers, registry, WebViewSecurity::default());
+
+        let error = runtime.dispatch(command("notes.list")).unwrap_err();
+        assert!(error.message.contains("not registered"));
+    }
+
+    #[test]
+    fn enforces_bridge_permissions() {
+        let mut handlers = BridgeHandlers::default();
+        handlers.register("vault.unlock", |_| {
+            Ok(BridgeResponse::json(serde_json::json!(true)))
+        });
+        let mut registry = BridgeRegistry::default();
+        registry
+            .register_descriptor(BridgeCommandDescriptor::new("vault.unlock").permission("vault"));
+        let runtime = BridgeRuntime::new(handlers, registry, WebViewSecurity::default());
+
+        let error = runtime.dispatch(command("vault.unlock")).unwrap_err();
+        assert!(error.message.contains("requires permission"));
+    }
+
+    #[test]
+    fn accepts_allowed_remote_origin() {
+        let mut handlers = BridgeHandlers::default();
+        handlers.register("notes.list", |_| {
+            Ok(BridgeResponse::json(serde_json::json!([])))
+        });
+        let mut registry = BridgeRegistry::default();
+        registry.register("notes.list");
+        let runtime = BridgeRuntime::new(
+            handlers,
+            registry,
+            WebViewSecurity {
+                remote_content: true,
+                allowed_origins: vec!["https://app.example".to_string()],
+                allowed_bridge_permissions: Vec::new(),
+            },
+        );
+        let mut request = command("notes.list");
+        request.origin = Some("https://app.example".to_string());
+
+        assert!(runtime.dispatch(request).is_ok());
+    }
+
+    #[test]
+    fn rejects_unallowed_remote_origin() {
+        let mut handlers = BridgeHandlers::default();
+        handlers.register("notes.list", |_| {
+            Ok(BridgeResponse::json(serde_json::json!([])))
+        });
+        let mut registry = BridgeRegistry::default();
+        registry.register("notes.list");
+        let runtime = BridgeRuntime::new(handlers, registry, WebViewSecurity::default());
+        let mut request = command("notes.list");
+        request.origin = Some("https://app.example".to_string());
+
+        let error = runtime.dispatch(request).unwrap_err();
+        assert!(error.message.contains("not allowed"));
+    }
+
+    #[test]
+    fn rejects_wrong_target() {
+        let mut handlers = BridgeHandlers::default();
+        handlers.register("mobile.only", |_| {
+            Ok(BridgeResponse::json(serde_json::json!(true)))
+        });
+        let mut registry = BridgeRegistry::default();
+        registry.register_descriptor(BridgeCommandDescriptor::new("mobile.only").target("mobile"));
+        let runtime = BridgeRuntime::new(handlers, registry, WebViewSecurity::default());
+
+        let error = runtime.dispatch(command("mobile.only")).unwrap_err();
+        assert!(error.message.contains("unavailable"));
+    }
+}

@@ -91,6 +91,52 @@ window.fenestra.bridge.listen("singleInstance.activate", event => {});
 Each app/window gets its own CEF cache profile while sharing the installed runtime, so multiple apps
 can use `~/.local/share/fenestra/runtimes/cef/` at the same time.
 
+## Runtime Reliability
+
+Runtime installs and Fenestra CEF host builds are locked per user-local runtime. If two apps start
+while CEF is missing, one installs or builds while the other waits and reuses the completed runtime.
+Stale locks are removed automatically.
+
+Old user-local runtime versions can be pruned from Rust code:
+
+```rust
+fenestra_runtime::prune_user_runtimes(&RuntimeConfig::default(), 2)?;
+```
+
+or from the CLI:
+
+```sh
+fenestra runtime prune cef --keep 2
+```
+
+Specific user-local versions can be removed with:
+
+```sh
+fenestra runtime remove cef 126.2.7 --package standard
+```
+
+Fenestra keeps browser profiles and CEF root cache paths outside the shared runtime installation.
+That keeps concurrent apps isolated while sharing binaries and OS page cache.
+
+## Performance Diagnostics
+
+Set `FENESTRA_TRACE=1` to print launch and OSR lifecycle timings:
+
+```sh
+FENESTRA_TRACE=1 cargo run -p fenestra-notes -- --glass
+```
+
+Launched processes also expose a metrics snapshot:
+
+```rust
+let process = CefWindow::new().vite_dev_server(5173).launch_or_install()?;
+let metrics = process.metrics();
+```
+
+The snapshot records stages such as dev command spawn, dev server readiness, host build/readiness,
+host process spawn, and launch readiness. OSR hosts also trace first paint and lifecycle frame-rate
+changes when tracing is enabled.
+
 ## Webview Lifecycle
 
 Fenestra can throttle or hibernate OSR webviews without app code managing CEF processes:

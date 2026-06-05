@@ -38,9 +38,9 @@ mod osr_host;
 mod osr_protocol;
 
 pub use fenestra_cef::{
-    CefLifecyclePolicy, CefWindowChrome, CefWindowControlAction, CefWindowControlRegion,
-    ShellSurfaceAnchor, ShellSurfaceKeyboardInteractivity, ShellSurfaceLayer, ShellSurfaceMargin,
-    ShellSurfaceOptions,
+    CefLaunchMetric, CefLaunchMetricsSnapshot, CefLifecyclePolicy, CefWindowChrome,
+    CefWindowControlAction, CefWindowControlRegion, FENESTRA_TRACE_ENV, ShellSurfaceAnchor,
+    ShellSurfaceKeyboardInteractivity, ShellSurfaceLayer, ShellSurfaceMargin, ShellSurfaceOptions,
 };
 pub use fenestra_runtime::{
     RuntimeConfig, RuntimeEngine, RuntimeError, RuntimeInfo, RuntimeInstallProgress,
@@ -101,6 +101,7 @@ pub struct WebViewConfig {
     pub entry: Option<String>,
     pub dev_url: Option<String>,
     pub dev_command: Option<String>,
+    pub app_id: Option<String>,
     pub title: String,
     pub width: u32,
     pub height: u32,
@@ -134,6 +135,7 @@ impl Default for WebViewConfig {
             entry: None,
             dev_url: None,
             dev_command: None,
+            app_id: None,
             title: "Stuk".to_string(),
             width: 900,
             height: 640,
@@ -170,6 +172,7 @@ pub struct DesktopServiceConfig {
     pub global_shortcuts: Vec<GlobalShortcutRegistration>,
     pub deep_links: Vec<DeepLinkRegistration>,
     pub native_messaging_hosts: Vec<NativeMessagingHost>,
+    pub single_instance_id: Option<String>,
     pub single_instance_policy: Option<SingleInstancePolicy>,
 }
 
@@ -350,6 +353,10 @@ impl WebViewProcess {
             .is_some_and(|emitter| emitter.emit_host_control("focus", "1"))
     }
 
+    pub fn metrics(&self) -> Option<CefLaunchMetricsSnapshot> {
+        self.cef.as_ref().map(fenestra_cef::CefProcess::metrics)
+    }
+
     fn start_desktop_event_forwarder(&mut self) {
         let (Some(services), Some(emitter)) =
             (self.desktop_services.as_ref(), self.bridge_emitter.clone())
@@ -469,6 +476,11 @@ impl WebViewWindow {
 
     pub fn title(mut self, title: impl Into<String>) -> Self {
         self.config.title = title.into();
+        self
+    }
+
+    pub fn app_id(mut self, app_id: impl Into<String>) -> Self {
+        self.config.app_id = Some(app_id.into());
         self
     }
 
@@ -759,6 +771,11 @@ impl WebViewWindow {
         self
     }
 
+    pub fn single_instance_id(mut self, id: impl Into<String>) -> Self {
+        self.config.desktop_services.single_instance_id = Some(id.into());
+        self
+    }
+
     pub fn bridge_command(mut self, command_name: impl Into<String>) -> Self {
         self.config.bridge.register(command_name);
         self
@@ -820,6 +837,7 @@ impl WebViewWindow {
             entry: config.entry,
             dev_url: config.dev_url,
             dev_command: config.dev_command,
+            app_id: config.app_id,
             title: config.title,
             width: config.width,
             height: config.height,
@@ -844,6 +862,7 @@ impl WebViewWindow {
                 global_shortcuts: config.desktop_services.global_shortcuts,
                 deep_links: config.desktop_services.deep_links,
                 native_messaging_hosts: config.desktop_services.native_messaging_hosts,
+                single_instance_id: config.desktop_services.single_instance_id,
                 single_instance_policy: config.desktop_services.single_instance_policy,
             },
             lifecycle: config.lifecycle,

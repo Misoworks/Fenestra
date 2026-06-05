@@ -1,13 +1,18 @@
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
-    io::{BufRead, BufReader},
+    fs::OpenOptions,
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use thiserror::Error;
 
 pub const DEFAULT_CEF_INDEX_URL: &str = "https://cef-builds.spotifycdn.com/index.json";
+const INSTALL_LOCK_TIMEOUT: Duration = Duration::from_secs(600);
+const INSTALL_LOCK_STALE_AFTER: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Debug, Error)]
 pub enum RuntimeError {
@@ -288,6 +293,16 @@ pub fn install_user_runtime_with_progress(
     if !config.allow_user_install {
         return Err(RuntimeError::DownloadsDisabled);
     }
+    std::fs::create_dir_all(user_runtime_path(config.engine))?;
+    let _lock = RuntimeInstallLock::acquire(config.engine, &mut progress)?;
+    if let Ok(runtime) = resolve_runtime(config) {
+        progress(RuntimeInstallProgress::new(
+            RuntimeInstallStep::Complete,
+            Some(1.0),
+            "Runtime ready",
+        ));
+        return Ok(runtime);
+    }
     progress(RuntimeInstallProgress::new(
         RuntimeInstallStep::Preparing,
         None,
@@ -306,7 +321,6 @@ pub fn install_user_runtime_with_progress(
         });
     }
 
-    std::fs::create_dir_all(user_runtime_path(config.engine))?;
     let work_dir = user_runtime_path(config.engine).join(".installing");
     if work_dir.exists() {
         std::fs::remove_dir_all(&work_dir)?;
@@ -368,6 +382,113 @@ pub fn remove_user_minimal_runtime_if_client_requested(
     config: &RuntimeConfig,
 ) -> Result<(), RuntimeError> {
     remove_user_minimal_runtime_if_client_requested_with_progress(config, |_| {})
+}
+
+pub fn prune_user_runtimes(
+    config: &RuntimeConfig,
+    keep_latest: usize,
+) -> Result<usize, RuntimeError> {
+    std::fs::create_dir_all(user_runtime_path(config.engine))?;
+    let _lock = RuntimeInstallLock::acquire(config.engine, |_| {})?;
+    let base = user_runtime_path(config.engine);
+    if !base.is_dir() {
+        return Ok(0);
+    }
+
+    let mut runtimes = std::fs::read_dir(base)?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir() && is_runtime_dir(path))
+        .filter(|path| detect_package(path) == config.package)
+        .collect::<Vec<_>>();
+    runtimes.sort_by(|left, right| runtime_sort_key(right).cmp(&runtime_sort_key(left)));
+
+    let mut removed = 0;
+    for path in runtimes.into_iter().skip(keep_latest.max(1)) {
+        std::fs::remove_dir_all(path)?;
+        removed += 1;
+    }
+    Ok(removed)
+}
+
+pub fn remove_user_runtime_version(
+    config: &RuntimeConfig,
+    version: &str,
+) -> Result<bool, RuntimeError> {
+    std::fs::create_dir_all(user_runtime_path(config.engine))?;
+    let _lock = RuntimeInstallLock::acquire(config.engine, |_| {})?;
+    let base = user_runtime_path(config.engine);
+    if !base.is_dir() {
+        return Ok(false);
+    }
+
+    let mut removed = false;
+    for path in std::fs::read_dir(base)?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir() && is_runtime_dir(path))
+        .filter(|path| detect_package(path) == config.package)
+        .filter(|path| detect_version(path) == version)
+    {
+        std::fs::remove_dir_all(path)?;
+        removed = true;
+    }
+    Ok(removed)
+}
+
+struct RuntimeInstallLock {
+    path: PathBuf,
+}
+
+impl RuntimeInstallLock {
+    fn acquire(
+        engine: RuntimeEngine,
+        mut progress: impl FnMut(RuntimeInstallProgress),
+    ) -> Result<Self, RuntimeError> {
+        let base = user_runtime_path(engine);
+        std::fs::create_dir_all(&base)?;
+        let path = base.join(".install.lock");
+        let started = Instant::now();
+        let mut announced_wait = false;
+
+        loop {
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut file) => {
+                    let _ = writeln!(file, "pid={}", std::process::id());
+                    let _ = writeln!(file, "started={}", unix_timestamp_secs());
+                    return Ok(Self { path });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if lock_is_stale(&path) {
+                        let _ = std::fs::remove_file(&path);
+                        continue;
+                    }
+                    if !announced_wait {
+                        progress(RuntimeInstallProgress::new(
+                            RuntimeInstallStep::Preparing,
+                            None,
+                            "Waiting for another Fenestra runtime install",
+                        ));
+                        announced_wait = true;
+                    }
+                    if started.elapsed() >= INSTALL_LOCK_TIMEOUT {
+                        return Err(RuntimeError::InstallationFailed(format!(
+                            "timed out waiting for runtime install lock at {}",
+                            path.display()
+                        )));
+                    }
+                    thread::sleep(Duration::from_millis(100));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+}
+
+impl Drop for RuntimeInstallLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 fn remove_user_minimal_runtime_if_client_requested_with_progress(
@@ -629,6 +750,13 @@ fn version_satisfies(found: &str, required: &str) -> bool {
     found != "unknown" && major_version(found) >= major_version(required)
 }
 
+fn runtime_sort_key(path: &Path) -> Vec<u32> {
+    detect_version(path)
+        .split(['.', '+', '-', '_'])
+        .filter_map(|part| part.parse::<u32>().ok())
+        .collect()
+}
+
 fn major_version(version: &str) -> u32 {
     version
         .split(['.', '+'])
@@ -647,6 +775,21 @@ fn cef_platform_key() -> Option<&'static str> {
         ("macos", "aarch64") => Some("macosarm64"),
         _ => None,
     }
+}
+
+fn lock_is_stale(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|elapsed| elapsed >= INSTALL_LOCK_STALE_AFTER)
+}
+
+fn unix_timestamp_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
 }
 
 #[derive(Deserialize)]

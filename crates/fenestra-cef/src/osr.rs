@@ -6,6 +6,7 @@ use std::{
 
 use crate::{
     BridgeHandlers, BridgeRuntime, CefConfig, CefError, CefProcess, CefResult, ld_library_path,
+    metrics::LaunchMetrics,
     prepare_bridge_command,
     process_tree::{ManagedChild, prepare_child_command},
     spawn_bridge_dispatch, webview_cache_dir,
@@ -33,17 +34,20 @@ pub(crate) fn launch_process(
     config: &CefConfig,
     bridge_handlers: &BridgeHandlers,
     url: &str,
+    metrics: LaunchMetrics,
 ) -> CefResult<CefProcess> {
     #[cfg(target_os = "linux")]
     {
         let host_binary = crate::ensure_cef_host(runtime_dir)
             .map_err(|message| CefError::CreationFailed { message })?;
+        metrics.mark("host.ready");
         let host_config_path =
             std::env::temp_dir().join(format!("fenestra-osr-{}.json", osr_instance_key()));
         let body = serde_json::json!({
             "runtime_dir": runtime_dir,
             "host_binary": host_binary,
             "url": url,
+            "app_id": config.app_id,
             "title": config.title,
             "width": config.width,
             "height": config.height,
@@ -83,6 +87,7 @@ pub(crate) fn launch_process(
         let mut child = command.spawn().map_err(|error| CefError::CreationFailed {
             message: format!("failed to launch Fenestra OSR host: {error}"),
         })?;
+        metrics.mark(format!("osr_host.spawned.pid.{}", child.id()));
         let bridge_dispatch = spawn_bridge_dispatch(
             &mut child,
             BridgeRuntime::new(
@@ -99,12 +104,13 @@ pub(crate) fn launch_process(
             desktop_services: None,
             desktop_event_thread: None,
             desktop_event_running: None,
+            metrics,
         })
     }
 
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (runtime_dir, config, bridge_handlers, url);
+        let _ = (runtime_dir, config, bridge_handlers, url, metrics);
         Err(CefError::CreationFailed {
             message: "CEF OSR host is currently implemented for Linux".to_string(),
         })

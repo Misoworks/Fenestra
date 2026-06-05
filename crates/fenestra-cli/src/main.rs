@@ -55,10 +55,21 @@ enum RuntimeSubcommand {
     },
     Install {
         engine: String,
+        #[arg(long, default_value = "standard")]
+        package: String,
     },
     Remove {
         engine: String,
         version: Option<String>,
+        #[arg(long, default_value = "standard")]
+        package: String,
+    },
+    Prune {
+        engine: String,
+        #[arg(long, default_value_t = 2)]
+        keep: usize,
+        #[arg(long, default_value = "standard")]
+        package: String,
     },
     Doctor {
         #[arg(long)]
@@ -71,10 +82,27 @@ fn main() -> ExitCode {
         Command::New { name, template } => template::new_app(&name, &template),
         Command::Runtime { command } => runtime::run_runtime(match command {
             RuntimeSubcommand::List { json } => RuntimeCommand::List { json },
-            RuntimeSubcommand::Install { engine } => RuntimeCommand::Install { engine },
-            RuntimeSubcommand::Remove { engine, version } => {
-                RuntimeCommand::Remove { engine, version }
+            RuntimeSubcommand::Install { engine, package } => {
+                RuntimeCommand::Install { engine, package }
             }
+            RuntimeSubcommand::Remove {
+                engine,
+                version,
+                package,
+            } => RuntimeCommand::Remove {
+                engine,
+                version,
+                package,
+            },
+            RuntimeSubcommand::Prune {
+                engine,
+                keep,
+                package,
+            } => RuntimeCommand::Prune {
+                engine,
+                keep,
+                package,
+            },
             RuntimeSubcommand::Doctor { json } => RuntimeCommand::Doctor { json },
         }),
         Command::Install {

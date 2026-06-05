@@ -1,8 +1,11 @@
 use std::{
+    fs::OpenOptions,
+    io::Write,
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const HOST_CMAKE: &str = include_str!("../host/linux/CMakeLists.txt");
@@ -14,6 +17,8 @@ const HOST_HANDLER_CC: &str = include_str!("../host/linux/handler.cc");
 const HOST_OSR_HANDLER_H: &str = include_str!("../host/linux/osr_handler.h");
 const HOST_OSR_HANDLER_CC: &str = include_str!("../host/linux/osr_handler.cc");
 static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(1);
+const HOST_BUILD_LOCK_TIMEOUT: Duration = Duration::from_secs(600);
+const HOST_BUILD_LOCK_STALE_AFTER: Duration = Duration::from_secs(30 * 60);
 
 pub fn ensure_cef_host(runtime_dir: &Path) -> Result<PathBuf, String> {
     let binary = runtime_dir.join("Release").join("fenestra-cef-host");
@@ -21,6 +26,12 @@ pub fn ensure_cef_host(runtime_dir: &Path) -> Result<PathBuf, String> {
     let build_dir = runtime_dir.join(".fenestra-host-build");
     let source_stamp = build_dir.join("fenestra-host-source.fnv");
     let expected_stamp = host_source_fingerprint();
+    if binary.is_file()
+        && std::fs::read_to_string(&source_stamp).is_ok_and(|stamp| stamp.trim() == expected_stamp)
+    {
+        return Ok(binary);
+    }
+    let _lock = HostBuildLock::acquire(runtime_dir)?;
     if binary.is_file()
         && std::fs::read_to_string(&source_stamp).is_ok_and(|stamp| stamp.trim() == expected_stamp)
     {
@@ -151,6 +162,54 @@ fn run_checked(command: &mut Command) -> Result<(), String> {
     ))
 }
 
+struct HostBuildLock {
+    path: PathBuf,
+}
+
+impl HostBuildLock {
+    fn acquire(runtime_dir: &Path) -> Result<Self, String> {
+        let path = runtime_dir.join(".fenestra-host-build.lock");
+        let started = Instant::now();
+        loop {
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut file) => {
+                    let _ = writeln!(file, "pid={}", std::process::id());
+                    let _ = writeln!(file, "started={}", unix_timestamp_secs());
+                    return Ok(Self { path });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if lock_is_stale(&path) {
+                        let _ = std::fs::remove_file(&path);
+                        continue;
+                    }
+                    if started.elapsed() >= HOST_BUILD_LOCK_TIMEOUT {
+                        return Err(format!(
+                            "timed out waiting for Fenestra CEF host build lock at {}",
+                            path.display()
+                        ));
+                    }
+                    thread::sleep(Duration::from_millis(100));
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+    }
+}
+
+impl Drop for HostBuildLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn lock_is_stale(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|elapsed| elapsed >= HOST_BUILD_LOCK_STALE_AFTER)
+}
+
 fn user_cache_home() -> PathBuf {
     std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
@@ -165,6 +224,13 @@ fn instance_key() -> String {
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
     format!("{}-{counter}-{timestamp}", std::process::id())
+}
+
+fn unix_timestamp_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
 }
 
 fn stable_hash(parts: &[&str]) -> u64 {

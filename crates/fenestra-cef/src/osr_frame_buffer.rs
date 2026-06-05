@@ -39,6 +39,9 @@ impl FrameBuffer {
             return None;
         }
         let damage = frame_damage(frame, width, height)?;
+        if !frame_payload_is_valid(frame, width, height) {
+            return None;
+        }
         self.ensure_size(width, height);
         compose_frame(frame, &mut self.bytes, width, height, false).then_some(damage)
     }
@@ -52,17 +55,23 @@ impl FrameBuffer {
         if width == 0 || height == 0 {
             return None;
         }
-        self.ensure_size(width, height);
+        let frames = frames.into_iter().collect::<Vec<_>>();
         let mut damage: Option<FrameDamage> = None;
-        for frame in frames {
+        for frame in &frames {
             let frame_damage = frame_damage(frame, width, height)?;
-            if !compose_frame(frame, &mut self.bytes, width, height, false) {
+            if !frame_payload_is_valid(frame, width, height) {
                 return None;
             }
             damage = Some(match damage {
                 Some(damage) => damage.union(frame_damage),
                 None => frame_damage,
             });
+        }
+        self.ensure_size(width, height);
+        for frame in frames {
+            if !compose_frame(frame, &mut self.bytes, width, height, false) {
+                return None;
+            }
         }
         damage
     }
@@ -179,6 +188,27 @@ pub(crate) fn compose_frame(
     true
 }
 
+fn frame_payload_is_valid(frame: &OsrFrame, width: u32, height: u32) -> bool {
+    if frame.width == 0 || frame.height == 0 {
+        return false;
+    }
+    let source_x = frame.x.min(0).unsigned_abs();
+    let source_y = frame.y.min(0).unsigned_abs();
+    let x_offset = frame.x.max(0) as u32;
+    let y_offset = frame.y.max(0) as u32;
+    let draw_width = (width.saturating_sub(x_offset)).min(frame.width.saturating_sub(source_x));
+    let draw_height = (height.saturating_sub(y_offset)).min(frame.height.saturating_sub(source_y));
+    if draw_width == 0 || draw_height == 0 {
+        return false;
+    }
+    let row_bytes = (draw_width * 4) as usize;
+    let last_row = source_y + draw_height - 1;
+    let last_source_index = ((last_row * frame.width + source_x) * 4) as usize;
+    last_source_index
+        .checked_add(row_bytes)
+        .is_some_and(|end| end <= frame.bytes.len())
+}
+
 fn blend_bgra(source: &[u8], destination: &mut [u8]) {
     let alpha = source[3] as u16;
     if alpha == 255 {
@@ -278,5 +308,55 @@ mod tests {
         );
         assert_eq!(&buffer.bytes()[0..4], &[1, 1, 1, 255]);
         assert_eq!(&buffer.bytes()[44..48], &[2, 2, 2, 255]);
+    }
+
+    #[test]
+    fn negative_dirty_rect_is_cropped_into_target() {
+        let mut buffer = FrameBuffer::new();
+        let frame = OsrFrame {
+            surface: OsrSurface::Main,
+            width: 2,
+            height: 2,
+            x: -1,
+            y: -1,
+            bytes: vec![1, 1, 1, 255, 2, 2, 2, 255, 3, 3, 3, 255, 4, 4, 4, 255],
+        };
+
+        assert_eq!(
+            buffer.compose(2, 2, &frame),
+            Some(FrameDamage {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            })
+        );
+        assert_eq!(&buffer.bytes()[0..4], &[4, 4, 4, 255]);
+        assert_eq!(&buffer.bytes()[4..8], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn invalid_dirty_payload_does_not_update_backing_store() {
+        let mut buffer = FrameBuffer::new();
+        let full = OsrFrame {
+            surface: OsrSurface::Main,
+            width: 1,
+            height: 1,
+            x: 0,
+            y: 0,
+            bytes: vec![7, 7, 7, 255],
+        };
+        let invalid = OsrFrame {
+            surface: OsrSurface::Main,
+            width: 2,
+            height: 2,
+            x: 0,
+            y: 0,
+            bytes: vec![9, 9, 9, 255],
+        };
+
+        assert!(buffer.compose(1, 1, &full).is_some());
+        assert!(buffer.compose(2, 2, &invalid).is_none());
+        assert_eq!(&buffer.bytes()[0..4], &[7, 7, 7, 255]);
     }
 }

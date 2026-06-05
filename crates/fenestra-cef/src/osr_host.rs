@@ -24,6 +24,7 @@ use winit::{
     event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     keyboard::Key,
+    platform::wayland::WindowAttributesWayland,
     window::{ResizeDirection, Window as WinitWindow, WindowAttributes, WindowId, WindowLevel},
 };
 
@@ -72,6 +73,7 @@ pub(crate) struct OsrHostConfig {
     pub runtime_dir: PathBuf,
     pub host_binary: PathBuf,
     pub url: String,
+    pub app_id: Option<String>,
     pub title: String,
     pub width: u32,
     pub height: u32,
@@ -103,6 +105,12 @@ impl OsrHostConfig {
             runtime_dir: path_value(&value, "runtime_dir")?,
             host_binary: path_value(&value, "host_binary")?,
             url: string_value(&value, "url")?,
+            app_id: value
+                .get("app_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string),
             title: value
                 .get("title")
                 .and_then(serde_json::Value::as_str)
@@ -450,6 +458,10 @@ impl OsrNativeHost {
             "lifecycle\t{name}\t{frame_rate}\t{}\n",
             encode_component(reason)
         ));
+        trace_host(
+            &self.config,
+            format!("lifecycle.{name}.{reason}.fps.{frame_rate}"),
+        );
     }
 
     fn sync_lifecycle(&mut self, reason: &str) {
@@ -832,6 +844,7 @@ impl OsrNativeHost {
             return;
         };
         self.presented = true;
+        trace_host(&self.config, "first_paint");
         self.effect = request_window_effect(&window, &self.window_options());
         self.update_effect_regions();
         if self.config.visible {
@@ -897,6 +910,8 @@ impl OsrNativeHost {
                 height: (height - y).max(1.0),
                 opacity: 1.0,
             });
+        } else if self.config.visible {
+            draw_loading_surface(&mut list, width, height, y);
         }
         if let Some(popup) = &self.popup_frame {
             list.push(ImageCommand {
@@ -1050,6 +1065,11 @@ impl ApplicationHandler for OsrNativeHost {
             })
             .with_transparent(self.config.transparent)
             .with_blur(self.config.background_effect.requires_transparency());
+        if let Some(app_id) = &self.config.app_id {
+            attributes = attributes.with_platform_attributes(Box::new(
+                WindowAttributesWayland::default().with_name(app_id, app_id),
+            ));
+        }
         if let Some(position) =
             crate::centered_window_position(event_loop, self.config.width, self.config.height)
         {
@@ -1553,6 +1573,43 @@ fn popup_local_frame(frame: &OsrFrame) -> OsrFrame {
 
 fn uses_fenestra_chrome(chrome: CefWindowChrome) -> bool {
     matches!(chrome, CefWindowChrome::Fenestra)
+}
+
+fn draw_loading_surface(list: &mut DisplayList, width: f32, height: f32, titlebar_height: f32) {
+    let content_width = (width - 96.0).clamp(180.0, 520.0);
+    let x = (width - content_width) * 0.5;
+    let y = titlebar_height + ((height - titlebar_height) * 0.38).max(52.0);
+    for (index, bar_width) in [content_width * 0.56, content_width, content_width * 0.74]
+        .into_iter()
+        .enumerate()
+    {
+        list.push(RoundedRectCommand {
+            x,
+            y: y + index as f32 * 16.0,
+            width: bar_width,
+            height: 8.0,
+            radius: 4.0,
+            color: Color::WHITE.opacity(0.10),
+        });
+    }
+}
+
+fn trace_host(config: &OsrHostConfig, stage: impl AsRef<str>) {
+    let enabled = std::env::var(crate::FENESTRA_TRACE_ENV).is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on" | "trace"
+        )
+    });
+    if !enabled {
+        return;
+    }
+    let label = config.app_id.as_deref().unwrap_or(&config.title);
+    eprintln!(
+        "fenestra trace [{label}] osr-host pid={} {}",
+        std::process::id(),
+        stage.as_ref()
+    );
 }
 
 fn can_defer_window_visibility() -> bool {

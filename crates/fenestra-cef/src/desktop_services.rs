@@ -67,9 +67,19 @@ pub fn apply_linux_desktop_services(
     global_shortcuts: &[GlobalShortcutRegistration],
     deep_links: &[DeepLinkRegistration],
     native_messaging_hosts: &[NativeMessagingHost],
+    single_instance_id: Option<&str>,
     single_instance_policy: Option<SingleInstancePolicy>,
 ) -> Result<LinuxDesktopServiceState, String> {
     let mut state = LinuxDesktopServiceState::new();
+    if let Some(policy) = single_instance_policy
+        && policy != SingleInstancePolicy::AllowMultiple
+    {
+        state.single_instance = Some(SingleInstanceGuard::acquire(
+            single_instance_id,
+            policy,
+            Arc::clone(&state.events),
+        )?);
+    }
     for entry in autostart {
         write_autostart_entry(entry).map_err(|error| error.to_string())?;
     }
@@ -87,14 +97,6 @@ pub fn apply_linux_desktop_services(
     }
     for host in native_messaging_hosts {
         register_native_messaging_host(host).map_err(|error| error.to_string())?;
-    }
-    if let Some(policy) = single_instance_policy
-        && policy != SingleInstancePolicy::AllowMultiple
-    {
-        state.single_instance = Some(SingleInstanceGuard::acquire(
-            policy,
-            Arc::clone(&state.events),
-        )?);
     }
     Ok(state)
 }
@@ -356,8 +358,13 @@ struct SingleInstanceGuard {
 }
 
 impl SingleInstanceGuard {
-    fn acquire(policy: SingleInstancePolicy, events: EventQueue) -> Result<Self, String> {
-        let socket_path = single_instance_socket_path().map_err(|error| error.to_string())?;
+    fn acquire(
+        instance_id: Option<&str>,
+        policy: SingleInstancePolicy,
+        events: EventQueue,
+    ) -> Result<Self, String> {
+        let socket_path =
+            single_instance_socket_path(instance_id).map_err(|error| error.to_string())?;
         if let Some(parent) = socket_path.parent() {
             fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
@@ -454,16 +461,23 @@ fn send_single_instance_activation(
     stream.write_all(body.to_string().as_bytes())
 }
 
-fn single_instance_socket_path() -> io::Result<PathBuf> {
+fn single_instance_socket_path(instance_id: Option<&str>) -> io::Result<PathBuf> {
     let runtime = env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| env::temp_dir());
-    let exe = env::current_exe()?;
-    let id = exe
-        .file_stem()
-        .and_then(|name| name.to_str())
+    let id = instance_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
         .map(sanitize_desktop_id)
-        .unwrap_or_else(|| "app".to_string());
+        .map(Ok)
+        .unwrap_or_else(|| {
+            env::current_exe().map(|exe| {
+                exe.file_stem()
+                    .and_then(|name| name.to_str())
+                    .map(sanitize_desktop_id)
+                    .unwrap_or_else(|| "app".to_string())
+            })
+        })?;
     Ok(runtime.join("fenestra").join(format!("{id}.sock")))
 }
 
@@ -544,7 +558,9 @@ fn write_file(path: PathBuf, contents: &str) -> io::Result<()> {
 
 fn desktop_entry(id: &str, name: &str, command: &str) -> String {
     format!(
-        "[Desktop Entry]\nType=Application\nName={}\nExec={}\nIcon={}\nTerminal=false\nCategories=Utility;\n",
+        "[Desktop Entry]\nType=Application\nName={}\nGenericName={}\nComment={}\nExec={}\nIcon={}\nTerminal=false\nNoDisplay=true\nStartupNotify=false\nCategories=Utility;\n",
+        desktop_value(name),
+        desktop_value(name),
         desktop_value(name),
         desktop_value(command),
         desktop_value(id)
