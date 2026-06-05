@@ -1951,7 +1951,7 @@ fn key_name(event: &KeyEvent) -> String {
 }
 
 fn should_send_char_text(text: &str) -> bool {
-    !matches!(text, "\u{8}" | "\u{7f}" | "\u{1b}")
+    !text.chars().any(char::is_control)
 }
 
 fn cursor_for_cef(cursor: &str) -> CursorIcon {

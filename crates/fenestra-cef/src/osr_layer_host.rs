@@ -528,17 +528,14 @@ impl OsrLayerHost {
     }
 
     fn show_surface(&mut self, state: &mut WindowState<()>) {
+        self.clear_frames();
         self.restore_keyboard(state);
         self.force_resume("visible");
         self.send_resize();
         if self.pointer_inside {
             self.forward_mouse_move(false);
         }
-        if self.main_frame_ready() {
-            self.refresh_surface(state, None);
-        } else {
-            self.hide_surface(state);
-        }
+        self.hide_surface(state);
     }
 
     fn hide_shell_surface(&mut self, state: &mut WindowState<()>) {
@@ -551,6 +548,7 @@ impl OsrLayerHost {
         self.force_suspend("hidden");
         self.send_resize();
         self.hide_surface(state);
+        self.release_hidden_frame_memory();
     }
 
     fn hide_surface(&mut self, state: &mut WindowState<()>) {
@@ -688,6 +686,12 @@ impl OsrLayerHost {
         self.main_frame = None;
         self.main_frame_surface_size = None;
         self.popup_frame = None;
+    }
+
+    fn release_hidden_frame_memory(&mut self) {
+        self.clear_frames();
+        self.main_buffer = Vec::new();
+        self.scratch = Vec::new();
     }
 
     fn commit_surface(&mut self, unit: &layershellev::WindowStateUnit<()>, damage: DamageRect) {

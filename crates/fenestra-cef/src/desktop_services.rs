@@ -497,7 +497,7 @@ pub fn start_desktop_event_forwarder(
             for event in drained {
                 emit(event);
             }
-            thread::sleep(Duration::from_millis(40));
+            thread::sleep(Duration::from_millis(8));
         }
     })
 }
