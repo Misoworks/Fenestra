@@ -77,6 +77,7 @@ struct OsrLayerHost {
     surface_size: (u32, u32),
     scale: f64,
     main_frame: Option<OsrFrame>,
+    main_frame_surface_size: Option<(u32, u32)>,
     popup_frame: Option<OsrFrame>,
     main_buffer: Vec<u8>,
     scratch: Vec<u8>,
@@ -139,6 +140,7 @@ impl OsrLayerHost {
             surface_size,
             scale: 1.0,
             main_frame: None,
+            main_frame_surface_size: None,
             popup_frame: None,
             main_buffer: Vec::new(),
             scratch: Vec::new(),
@@ -169,7 +171,11 @@ impl OsrLayerHost {
                 let height = height.max(1);
                 self.shm = Some(shm.clone());
                 self.queue_handle = Some(qh.clone());
+                let size_changed = self.surface_size != (width, height);
                 self.surface_size = (width, height);
+                if size_changed {
+                    self.clear_frames();
+                }
                 ReturnData::WlBuffer(self.install_wayland_buffer(file, shm, qh, width, height))
             }
             LayerShellEvent::RequestMessages(message) => self.handle_message(message, state, id),
@@ -200,7 +206,7 @@ impl OsrLayerHost {
                 }
                 self.ensure_child();
                 self.send_resize();
-                if self.visible && self.main_frame.is_some() {
+                if self.visible && self.main_frame_ready() {
                     self.refresh_surface(state, id);
                 } else {
                     self.hide_surface(state);
@@ -296,13 +302,22 @@ impl OsrLayerHost {
             LayerHostEvent::Message(OsrMessage::Frame(frame)) => {
                 if self.visible {
                     match frame.surface {
-                        OsrSurface::Main => self.main_frame = Some(frame),
+                        OsrSurface::Main => {
+                            let frame_size = (frame.width, frame.height);
+                            if self.main_frame_surface_size != Some(frame_size) {
+                                self.popup_frame = None;
+                            }
+                            self.main_frame_surface_size = Some(frame_size);
+                            self.main_frame = Some(frame);
+                        }
                         OsrSurface::Popup => self.popup_frame = Some(frame),
                     }
-                    if self.main_frame.is_some() {
+                    if self.main_frame_ready() {
                         self.restore_keyboard(state);
                         self.force_resume("first-paint");
                         self.refresh_surface(state, id);
+                    } else {
+                        self.hide_surface(state);
                     }
                 }
             }
@@ -429,15 +444,11 @@ impl OsrLayerHost {
         let Ok(mut file) = temporary_buffer_file() else {
             return;
         };
-        self.main_frame = None;
-        self.popup_frame = None;
+        self.clear_frames();
         self.install_wayland_buffer(&mut file, &shm, &qh, width.max(1), height.max(1));
     }
 
     fn content_size_for_cef(&self) -> (u32, u32, f64) {
-        if !self.visible {
-            return (1, 1, self.scale.max(1.0));
-        }
         (
             self.surface_size.0.max(1),
             self.surface_size.1.max(1),
@@ -523,7 +534,7 @@ impl OsrLayerHost {
         if self.pointer_inside {
             self.forward_mouse_move(false);
         }
-        if self.main_frame.is_some() {
+        if self.main_frame_ready() {
             self.refresh_surface(state, None);
         } else {
             self.hide_surface(state);
@@ -570,7 +581,7 @@ impl OsrLayerHost {
     }
 
     fn refresh_surface(&mut self, state: &mut WindowState<()>, id: Option<layershellev::id::Id>) {
-        if !self.visible || self.main_frame.is_none() {
+        if !self.visible || !self.main_frame_ready() {
             return;
         }
         let Some(file) = &self.buffer_file else {
@@ -606,6 +617,13 @@ impl OsrLayerHost {
         state: &mut WindowState<()>,
         id: Option<layershellev::id::Id>,
     ) {
+        if batch.surface == OsrSurface::Main && (batch.width, batch.height) != self.surface_size {
+            self.main_frame = None;
+            self.main_frame_surface_size = Some((batch.width, batch.height));
+            self.popup_frame = None;
+            self.hide_surface(state);
+            return;
+        }
         if batch.surface == OsrSurface::Popup && self.main_frame.is_none() {
             return;
         }
@@ -642,12 +660,13 @@ impl OsrLayerHost {
         match batch.surface {
             OsrSurface::Main => {
                 self.main_frame = batch.frames.last().cloned();
+                self.main_frame_surface_size = Some((batch.width, batch.height));
             }
             OsrSurface::Popup => {
                 self.popup_frame = absolute_frames.last().cloned();
             }
         }
-        if self.main_frame.is_none() {
+        if !self.main_frame_ready() {
             return;
         }
         self.restore_keyboard(state);
@@ -659,6 +678,16 @@ impl OsrLayerHost {
             return;
         }
         self.commit_surface(state.main_window(), damage);
+    }
+
+    fn main_frame_ready(&self) -> bool {
+        self.main_frame.is_some() && self.main_frame_surface_size == Some(self.surface_size)
+    }
+
+    fn clear_frames(&mut self) {
+        self.main_frame = None;
+        self.main_frame_surface_size = None;
+        self.popup_frame = None;
     }
 
     fn commit_surface(&mut self, unit: &layershellev::WindowStateUnit<()>, damage: DamageRect) {
