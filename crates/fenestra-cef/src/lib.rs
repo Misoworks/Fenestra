@@ -361,6 +361,12 @@ impl CefProcess {
         self.set_visible(visible)
     }
 
+    pub fn set_shell_surface_alpha(&self, alpha: f32) -> bool {
+        self.bridge_emitter
+            .as_ref()
+            .is_some_and(|emitter| emitter.set_alpha(alpha))
+    }
+
     pub fn set_visible(&self, visible: bool) -> bool {
         self.bridge_emitter
             .as_ref()
@@ -460,6 +466,10 @@ impl BridgeEventEmitter {
 
     pub fn set_visible(&self, visible: bool) -> bool {
         self.emit_host_control("visible", if visible { "1" } else { "0" })
+    }
+
+    pub fn set_alpha(&self, alpha: f32) -> bool {
+        self.emit_host_control("alpha", &format!("{:.4}", alpha.clamp(0.0, 1.0)))
     }
 
     pub fn show(&self) -> bool {

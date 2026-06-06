@@ -22,12 +22,14 @@ use crate::{
     osr_protocol::{OsrFrame, OsrMessage, OsrPaintBatch, OsrSurface, absolute_batch_frame},
 };
 
+mod alpha;
 mod buffer;
 mod forward;
 mod input;
 mod shell;
 mod socket;
 
+use alpha::LayerAlphaModifier;
 use buffer::{DamageRect, paint_buffer_file, paint_frames_buffer_file};
 use input::{axis_delta, cursor_shape_for_wayland};
 use shell::{anchor_for_shell, keyboard_for_shell, layer_for_shell};
@@ -93,6 +95,8 @@ struct OsrLayerHost {
     active_click_count: i32,
     focused: bool,
     lifecycle_state: LayerLifecycleState,
+    alpha_modifier: Option<LayerAlphaModifier>,
+    surface_alpha: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -156,6 +160,8 @@ impl OsrLayerHost {
             active_click_count: 1,
             focused,
             lifecycle_state,
+            alpha_modifier: None,
+            surface_alpha: if visible { 1.0 } else { 0.0 },
         }
     }
 
@@ -351,6 +357,7 @@ impl OsrLayerHost {
                 self.set_surface_visible(true, state)
             }
             LayerHostEvent::Visible(visible) => self.set_surface_visible(visible, state),
+            LayerHostEvent::Alpha(alpha) => self.set_surface_alpha(alpha, state),
             LayerHostEvent::Disconnected => {
                 self.socket = None;
                 return ReturnData::RequestExit;
@@ -529,6 +536,7 @@ impl OsrLayerHost {
 
     fn show_surface(&mut self, state: &mut WindowState<()>) {
         self.clear_frames();
+        self.set_surface_alpha(1.0, state);
         self.restore_keyboard(state);
         self.force_resume("visible");
         self.send_resize();
@@ -547,8 +555,23 @@ impl OsrLayerHost {
         self.send_control("focus\t0\n");
         self.force_suspend("hidden");
         self.send_resize();
+        self.set_surface_alpha(0.0, state);
         self.hide_surface(state);
         self.release_hidden_frame_memory();
+    }
+
+    fn set_surface_alpha(&mut self, alpha: f32, state: &WindowState<()>) {
+        let alpha = alpha.clamp(0.0, 1.0);
+        if (self.surface_alpha - alpha).abs() <= 0.001 {
+            return;
+        }
+        if self.alpha_modifier.is_none() {
+            self.alpha_modifier = LayerAlphaModifier::bind(state);
+        }
+        self.surface_alpha = alpha;
+        if let Some(modifier) = &self.alpha_modifier {
+            let _ = modifier.set_alpha(alpha);
+        }
     }
 
     fn hide_surface(&mut self, state: &mut WindowState<()>) {

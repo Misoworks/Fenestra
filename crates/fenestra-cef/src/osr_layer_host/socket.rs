@@ -19,6 +19,7 @@ pub(super) enum LayerHostEvent {
     Connected(UnixStream),
     Message(OsrMessage),
     Visible(bool),
+    Alpha(f32),
     Disconnected,
 }
 
@@ -42,6 +43,12 @@ pub(super) fn spawn_layer_bridge_proxy(child: &mut Child, sender: Sender<LayerHo
             for line in input.lock().lines().map_while(std::result::Result::ok) {
                 if let Some(visible) = parse_visibility_control(&line) {
                     if sender.send(LayerHostEvent::Visible(visible)).is_err() {
+                        break;
+                    }
+                    continue;
+                }
+                if let Some(alpha) = parse_alpha_control(&line) {
+                    if sender.send(LayerHostEvent::Alpha(alpha)).is_err() {
                         break;
                     }
                     continue;
@@ -130,4 +137,12 @@ fn parse_visibility_control(line: &str) -> Option<bool> {
         "hide" => Some(false),
         _ => None,
     }
+}
+
+fn parse_alpha_control(line: &str) -> Option<f32> {
+    let (command, value) = crate::parse_host_control(line)?;
+    if command != "alpha" {
+        return None;
+    }
+    value.parse::<f32>().ok().map(|alpha| alpha.clamp(0.0, 1.0))
 }
