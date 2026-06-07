@@ -171,10 +171,6 @@ impl BridgeRuntime {
         }
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.handlers.is_empty()
-    }
-
     pub(crate) fn dispatch(&self, command: BridgeCommand) -> BridgeResult {
         let descriptor = self.registry.descriptor(&command.name);
         validate_permissions(&self.security, &command, descriptor)?;

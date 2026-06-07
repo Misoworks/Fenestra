@@ -37,9 +37,10 @@ mod osr_host;
 mod osr_protocol;
 
 pub use fenestra_cef::{
-    CefLaunchMetric, CefLaunchMetricsSnapshot, CefLifecyclePolicy, CefWindowChrome,
-    CefWindowControlAction, CefWindowControlRegion, FENESTRA_TRACE_ENV, ShellSurfaceAnchor,
-    ShellSurfaceKeyboardInteractivity, ShellSurfaceLayer, ShellSurfaceMargin, ShellSurfaceOptions,
+    ActivityOptions, ActivityRecord, CefActivityLease, CefLaunchMetric, CefLaunchMetricsSnapshot,
+    CefLifecyclePolicy, CefWindowChrome, CefWindowControlAction, CefWindowControlRegion,
+    FENESTRA_TRACE_ENV, ShellSurfaceAnchor, ShellSurfaceKeyboardInteractivity, ShellSurfaceLayer,
+    ShellSurfaceMargin, ShellSurfaceOptions,
 };
 pub use fenestra_runtime::{
     RuntimeConfig, RuntimeEngine, RuntimeError, RuntimeInfo, RuntimeInstallProgress,
@@ -388,6 +389,25 @@ impl WebViewProcess {
         self.bridge_emitter
             .as_ref()
             .is_some_and(|emitter| emitter.emit_host_control("focus", "1"))
+    }
+
+    pub fn begin_activity(&self, name: impl Into<String>) -> Option<CefActivityLease> {
+        self.cef
+            .as_ref()
+            .map(|process| process.begin_activity(name))
+    }
+
+    pub fn begin_activity_with(&self, options: ActivityOptions) -> Option<CefActivityLease> {
+        self.cef
+            .as_ref()
+            .map(|process| process.begin_activity_with(options))
+    }
+
+    pub fn activities(&self) -> Vec<ActivityRecord> {
+        self.cef
+            .as_ref()
+            .map(fenestra_cef::CefProcess::activities)
+            .unwrap_or_default()
     }
 
     pub fn metrics(&self) -> Option<CefLaunchMetricsSnapshot> {
@@ -986,22 +1006,9 @@ impl WebViewWindow {
                 message: "webview has no entry or dev url".to_string(),
             });
         };
-        let entry_path = PathBuf::from(entry);
-        let path = if entry_path.is_absolute() {
-            entry_path
-        } else {
-            std::env::current_dir()
-                .map_err(|error| WebViewError::CreationFailed {
-                    message: error.to_string(),
-                })?
-                .join(entry_path)
-        };
-        let path = path
-            .canonicalize()
-            .map_err(|error| WebViewError::CreationFailed {
-                message: format!("failed to resolve webview entry: {error}"),
-            })?;
-        Ok(format!("file://{}", path.display()))
+        let (entry_path, suffix) = split_entry_suffix(entry);
+        let path = canonical_entry(entry_path)?;
+        Ok(format!("file://{}{}", path.display(), suffix))
     }
 
     fn ensure_default_bridge_handlers(&mut self) {
@@ -2903,6 +2910,39 @@ fn webview_cef_chrome(config: &WebViewConfig) -> CefWindowChrome {
     })
 }
 
+fn canonical_entry(entry: &str) -> WebViewResult<PathBuf> {
+    if entry.trim().is_empty() {
+        return Err(WebViewError::CreationFailed {
+            message: "webview entry path is empty".to_string(),
+        });
+    }
+    let entry_path = PathBuf::from(entry);
+    let path = if entry_path.is_absolute() {
+        entry_path
+    } else {
+        std::env::current_dir()
+            .map_err(|error| WebViewError::CreationFailed {
+                message: error.to_string(),
+            })?
+            .join(entry_path)
+    };
+    path.canonicalize()
+        .map_err(|error| WebViewError::CreationFailed {
+            message: format!("failed to resolve webview entry: {error}"),
+        })
+}
+
+fn split_entry_suffix(entry: &str) -> (&str, &str) {
+    let split = [entry.find('?'), entry.find('#')]
+        .into_iter()
+        .flatten()
+        .min();
+    match split {
+        Some(index) => (&entry[..index], &entry[index..]),
+        None => (entry, ""),
+    }
+}
+
 #[derive(Clone, Debug)]
 struct DevUrlParts {
     scheme: String,
@@ -3038,6 +3078,17 @@ mod tests {
         );
         assert!(window.config.transparent);
         assert_eq!(window.config.runtime.engine, RuntimeEngine::Cef);
+    }
+
+    #[test]
+    fn webview_entry_keeps_query_and_hash_suffix() {
+        let entry = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs");
+        let window = WebViewWindow::new().entry(format!("{}?fenestra=1#/", entry.display()));
+
+        let url = window.entry_url().unwrap();
+
+        assert!(url.starts_with("file://"));
+        assert!(url.ends_with("/src/lib.rs?fenestra=1#/"));
     }
 
     #[test]

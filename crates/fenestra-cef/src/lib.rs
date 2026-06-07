@@ -1,3 +1,4 @@
+mod activity;
 mod bridge;
 mod desktop_services;
 mod host;
@@ -23,6 +24,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub use activity::{ActivityOptions, ActivityRecord, CefActivityLease};
 pub(crate) use bridge::BridgeRuntime;
 pub use bridge::{
     BridgeCommand, BridgeCommandDescriptor, BridgeError, BridgeHandlers, BridgeRegistry,
@@ -355,6 +357,7 @@ pub struct CefProcess {
     desktop_services: Option<LinuxDesktopServiceState>,
     desktop_event_thread: Option<JoinHandle<()>>,
     desktop_event_running: Option<Arc<AtomicBool>>,
+    activity: activity::ActivityRegistry,
     metrics: LaunchMetrics,
 }
 
@@ -418,6 +421,18 @@ impl CefProcess {
             .is_some_and(BridgeEventEmitter::focus_window)
     }
 
+    pub fn begin_activity(&self, name: impl Into<String>) -> CefActivityLease {
+        self.begin_activity_with(ActivityOptions::new(name))
+    }
+
+    pub fn begin_activity_with(&self, options: ActivityOptions) -> CefActivityLease {
+        self.activity.lease(options, self.bridge_emitter.clone())
+    }
+
+    pub fn activities(&self) -> Vec<ActivityRecord> {
+        self.activity.list()
+    }
+
     pub fn bridge_event_emitter(&self) -> Option<BridgeEventEmitter> {
         self.bridge_emitter.clone()
     }
@@ -438,6 +453,14 @@ impl CefProcess {
             services,
             running,
             move |event| {
+                if matches!(
+                    &event,
+                    PlatformEvent::SingleInstance(activation)
+                        if activation.policy == SingleInstancePolicy::FocusExisting
+                ) {
+                    let _ = emitter.show();
+                    let _ = emitter.focus_window();
+                }
                 let (name, payload) = platform_event_payload(event);
                 let _ = emitter.emit(name, payload);
             },
@@ -509,6 +532,14 @@ impl BridgeEventEmitter {
 
     pub fn focus_window(&self) -> bool {
         self.emit_host_control("focus", "1")
+    }
+
+    pub(crate) fn emit_activity_update(&self, update: &activity::ActivityHostUpdate) -> bool {
+        let command = match update {
+            activity::ActivityHostUpdate::Begin(_) => "activity.begin",
+            activity::ActivityHostUpdate::End(_) => "activity.end",
+        };
+        self.emit_host_control(command, &activity::host_update_json(update).to_string())
     }
 
     fn emit_host_control(&self, command: &str, value: &str) -> bool {
@@ -1193,6 +1224,7 @@ fn launch_cef_host(
         message: error.to_string(),
     })?;
     metrics.mark(format!("host.spawned.pid.{}", child.id()));
+    let activity = activity::ActivityRegistry::default();
     let bridge_dispatch = spawn_bridge_dispatch(
         &mut child,
         bridge::BridgeRuntime::new(
@@ -1200,6 +1232,7 @@ fn launch_cef_host(
             config.bridge.clone(),
             config.security.clone(),
         ),
+        activity.clone(),
     );
     Ok(CefProcess {
         child: ManagedChild::new(child),
@@ -1209,6 +1242,7 @@ fn launch_cef_host(
         desktop_services: None,
         desktop_event_thread: None,
         desktop_event_running: None,
+        activity,
         metrics,
     })
 }
@@ -1259,7 +1293,7 @@ fn cef_window_command(
         .arg(format!("--fenestra-height={}", config.height.max(1)))
         .arg(format!(
             "--fenestra-bridge-commands={}",
-            config.bridge.commands().join(",")
+            activity::bridge_commands_with_internal(config.bridge.commands()).join(",")
         ))
         .arg(format!("--root-cache-path={}", cache_dir.display()))
         .arg(format!(
@@ -1288,13 +1322,9 @@ fn cef_window_command(
     Ok(command)
 }
 
-fn prepare_bridge_command(command: &mut Command, bridge_handlers: &BridgeHandlers) {
+fn prepare_bridge_command(command: &mut Command, _bridge_handlers: &BridgeHandlers) {
     command.stdin(Stdio::piped());
-    if bridge_handlers.is_empty() {
-        command.stdout(Stdio::null());
-    } else {
-        command.stdout(Stdio::piped());
-    }
+    command.stdout(Stdio::piped());
 }
 
 struct BridgeDispatch {
@@ -1305,6 +1335,7 @@ struct BridgeDispatch {
 fn spawn_bridge_dispatch(
     child: &mut Child,
     bridge_runtime: bridge::BridgeRuntime,
+    activity: activity::ActivityRegistry,
 ) -> BridgeDispatch {
     let Some(stdin) = child.stdin.take() else {
         return BridgeDispatch {
@@ -1316,25 +1347,33 @@ fn spawn_bridge_dispatch(
     let emitter = Some(BridgeEventEmitter {
         stdin: Arc::clone(&stdin),
     });
-    if bridge_runtime.is_empty() {
-        return BridgeDispatch {
-            thread: None,
-            emitter,
-        };
-    }
     let Some(stdout) = child.stdout.take() else {
         return BridgeDispatch {
             thread: None,
             emitter,
         };
     };
+    let activity_emitter = emitter.clone();
     let thread = thread::spawn(move || {
         let reader = BufReader::new(stdout);
         for line in reader.lines().map_while(std::result::Result::ok) {
             let Some(request) = BridgeIpcRequest::parse(&line) else {
                 continue;
             };
-            let response = bridge_runtime.dispatch(request.command);
+            let response = if let Some((response, update)) =
+                activity.dispatch_bridge_command(&request.command)
+            {
+                if let (Ok(_), Some(update), Some(emitter)) = (
+                    response.as_ref(),
+                    update.as_ref(),
+                    activity_emitter.as_ref(),
+                ) {
+                    let _ = emitter.emit_activity_update(update);
+                }
+                response
+            } else {
+                bridge_runtime.dispatch(request.command)
+            };
             let line = BridgeIpcResponse::from_result(request.browser_id, request.id, response);
             let Ok(mut stdin) = stdin.lock() else {
                 break;

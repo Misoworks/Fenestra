@@ -28,11 +28,17 @@ pub(super) fn web_toml(app: &BundleApp) -> Option<String> {
     ))
 }
 
-pub(super) fn desktop_entry(app: &BundleApp, executable: &str) -> String {
+pub(super) fn desktop_entry(app: &BundleApp, executable: &str, icon: Option<&str>) -> String {
+    let icon = icon
+        .map(|icon| format!("Icon={}\n", desktop_value(icon)))
+        .unwrap_or_default();
+    let mime_types = mime_type_line(&app.mime_types);
     format!(
-        "[Desktop Entry]\nType=Application\nName={}\nExec={}\nTerminal=false\nCategories=Utility;Development;\nStartupNotify=true\n",
+        "[Desktop Entry]\nType=Application\nName={}\nExec={}\n{}{}Terminal=false\nCategories=Utility;Development;\nStartupNotify=true\n",
         desktop_value(&app.name),
-        desktop_value(executable)
+        desktop_value(executable),
+        icon,
+        mime_types
     )
 }
 
@@ -191,6 +197,22 @@ fn xml(value: &str) -> String {
 
 fn desktop_value(value: &str) -> String {
     value.replace(['\n', '\r'], " ")
+}
+
+fn mime_type_line(mime_types: &[String]) -> String {
+    if mime_types.is_empty() {
+        return String::new();
+    }
+    let values = mime_types
+        .iter()
+        .map(|mime_type| mime_type.trim())
+        .filter(|mime_type| !mime_type.is_empty())
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        String::new()
+    } else {
+        format!("MimeType={};\n", values.join(";"))
+    }
 }
 
 fn debian_name(value: &str) -> String {

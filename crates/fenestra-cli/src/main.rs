@@ -1,5 +1,8 @@
 mod bundle;
+mod icon_assets;
 mod runtime;
+mod source_assets;
+mod source_desktop;
 mod source_install;
 mod template;
 

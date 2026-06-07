@@ -120,6 +120,10 @@ std::string BridgeInstallScript(const std::vector<std::string>& commands) {
          "window.location.href=url;"
          "});"
          "}};"
+         "window.fenestra.activity={begin(options={}){"
+         "return window.fenestra.bridge.invoke('fenestra.activity.begin',options).then(record=>{"
+         "let ended=false;return Object.assign({},record,{end(){if(ended)return Promise.resolve({id:record.id,ended:false});ended=true;return window.fenestra.bridge.invoke('fenestra.activity.end',{id:record.id});}});});},"
+         "list(){return window.fenestra.bridge.invoke('fenestra.activity.list');}};"
          "})();";
 }
 

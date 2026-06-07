@@ -1,7 +1,13 @@
 use std::{
     env, fs, io,
     path::{Path, PathBuf},
-    process::{Command as ProcessCommand, ExitCode},
+    process::ExitCode,
+};
+
+use crate::{
+    icon_assets,
+    source_assets::{self, StagedAssets},
+    source_desktop,
 };
 
 #[derive(Debug)]
@@ -21,13 +27,14 @@ pub struct UpdateOptions {
 }
 
 #[derive(Clone, Debug)]
-struct SourceApp {
-    id: String,
-    name: String,
-    source: PathBuf,
-    command: Option<String>,
-    icon: Option<PathBuf>,
-    autostart: bool,
+pub struct SourceApp {
+    pub id: String,
+    pub name: String,
+    pub source: PathBuf,
+    pub command: Option<String>,
+    pub icon: Option<PathBuf>,
+    pub mime_types: Vec<String>,
+    pub autostart: bool,
 }
 
 pub fn install(options: InstallOptions) -> Result<ExitCode, String> {
@@ -56,23 +63,20 @@ pub fn update(options: UpdateOptions) -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    let Some(target) = options.target else {
-        return Err(
-            "usage: fenestra update <id-or-source-path> or fenestra update --all".to_string(),
-        );
-    };
-    let app = if Path::new(&target).exists() {
-        detect_source_app(Path::new(&target), None, None, None, false)?
-    } else {
-        read_registered_app(&target)?
+    let app = match options.target {
+        Some(target) if Path::new(&target).exists() => {
+            detect_source_app(Path::new(&target), None, None, None, false)?
+        }
+        Some(target) => read_registered_app(&target)?,
+        None => detect_source_app(Path::new("."), None, None, None, false)?,
     };
     update_registered_app(&app)?;
     Ok(ExitCode::SUCCESS)
 }
 
 fn update_registered_app(app: &SourceApp) -> Result<(), String> {
-    pull_source_if_git(&app.source)?;
-    register_app(app, true)?;
+    let app = detect_source_app(&app.source, Some(app.id.clone()), None, None, app.autostart)?;
+    register_app(&app, true)?;
     println!("updated {} from {}", app.name, app.source.display());
     Ok(())
 }
@@ -85,27 +89,25 @@ fn detect_source_app(
     autostart: bool,
 ) -> Result<SourceApp, String> {
     let source = absolute_path(source)?;
-    let manifest = source.join("Stuk.toml");
-    let (manifest_id, manifest_name, manifest_icon) = if manifest.exists() {
-        read_app_section(&manifest, &source)
-    } else {
-        (None, None, None)
-    };
+    let metadata = source_assets::metadata(&source);
     let package_name = package_name(&source.join("Cargo.toml"));
     let name = name
-        .or(manifest_name)
+        .or(metadata.name)
         .or_else(|| package_name.clone())
-        .ok_or_else(|| "source app needs Cargo.toml package metadata".to_string())?;
+        .ok_or_else(|| {
+            "source app needs --name, app metadata, or Cargo.toml package metadata".to_string()
+        })?;
     let id = id
-        .or(manifest_id)
+        .or(metadata.id)
         .unwrap_or_else(|| format!("dev.fenestra.{}", sanitize_id(&name)));
 
     Ok(SourceApp {
         id: sanitize_id(&id),
         name,
         source,
-        command,
-        icon: manifest_icon,
+        command: command.or(metadata.command),
+        icon: metadata.icon,
+        mime_types: metadata.mime_types,
         autostart,
     })
 }
@@ -113,12 +115,15 @@ fn detect_source_app(
 fn register_app(app: &SourceApp, desktop: bool) -> Result<(), String> {
     let app_dir = app_dir(&app.id)?;
     fs::create_dir_all(&app_dir).map_err(|error| error.to_string())?;
+    let assets = source_assets::stage(&app.source, &app_dir, app.icon.as_deref())?;
+    let desktop_icon = icon_assets::install_user_icon(&app.id, assets.icon.as_deref())?;
     let wrapper = app_dir.join("launch.sh");
-    fs::write(&wrapper, launcher_script(app)).map_err(|error| error.to_string())?;
+    fs::write(&wrapper, launcher_script(app, &app_dir, &assets))
+        .map_err(|error| error.to_string())?;
     make_executable(&wrapper).map_err(|error| error.to_string())?;
     fs::write(
         app_dir.join("source-install.toml"),
-        registry_record(app, &wrapper),
+        registry_record(app, &wrapper, &assets),
     )
     .map_err(|error| error.to_string())?;
 
@@ -127,16 +132,17 @@ fn register_app(app: &SourceApp, desktop: bool) -> Result<(), String> {
         fs::create_dir_all(&desktop_dir).map_err(|error| error.to_string())?;
         fs::write(
             desktop_dir.join(format!("{}.desktop", app.id)),
-            desktop_entry(app, &wrapper),
+            source_desktop::entry(app, &wrapper, desktop_icon.as_deref()),
         )
         .map_err(|error| error.to_string())?;
+        source_desktop::refresh_database(&desktop_dir);
     }
     if app.autostart {
         let autostart_dir = autostart_dir()?;
         fs::create_dir_all(&autostart_dir).map_err(|error| error.to_string())?;
         fs::write(
             autostart_dir.join(format!("{}.desktop", app.id)),
-            desktop_entry(app, &wrapper),
+            source_desktop::entry(app, &wrapper, desktop_icon.as_deref()),
         )
         .map_err(|error| error.to_string())?;
     }
@@ -176,6 +182,16 @@ fn read_registry_record(path: &Path) -> Result<SourceApp, String> {
     let icon = registry_value(&text, "icon")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
+    let mime_types = registry_value(&text, "mime_types")
+        .map(|value| {
+            value
+                .split(';')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let autostart = registry_value(&text, "autostart")
         .map(|value| value == "true")
         .unwrap_or(false);
@@ -185,116 +201,86 @@ fn read_registry_record(path: &Path) -> Result<SourceApp, String> {
         source,
         command,
         icon,
+        mime_types,
         autostart,
     })
 }
 
-fn pull_source_if_git(source: &Path) -> Result<(), String> {
-    let Ok(output) = ProcessCommand::new("git")
-        .arg("-C")
-        .arg(source)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-    else {
-        return Ok(());
-    };
-    if !output.status.success() {
-        return Ok(());
-    }
-    let git_root = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if git_root.is_empty() {
-        return Ok(());
-    }
-    let status = ProcessCommand::new("git")
-        .arg("-C")
-        .arg(&git_root)
-        .args(["pull", "--ff-only"])
-        .status()
-        .map_err(|error| error.to_string())?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("git pull --ff-only failed in {git_root}"))
-    }
-}
-
-fn launcher_script(app: &SourceApp) -> String {
+fn launcher_script(app: &SourceApp, app_dir: &Path, assets: &StagedAssets) -> String {
     let source = shell_quote(&app.source.display().to_string());
+    let mut exports = vec![
+        format!("export FENESTRA_APP_ID={}", shell_quote(&app.id)),
+        format!(
+            "export FENESTRA_APP_DIR={}",
+            shell_quote(&app_dir.display().to_string())
+        ),
+        format!(
+            "export FENESTRA_SOURCE_DIR={}",
+            shell_quote(&app.source.display().to_string())
+        ),
+    ];
+    if let Some(web_dir) = &assets.web_dir {
+        exports.push(format!(
+            "export FENESTRA_WEB_DIR={}",
+            shell_quote(&web_dir.display().to_string())
+        ));
+    }
+    if let Some(web_entry) = &assets.web_entry {
+        exports.push(format!(
+            "export FENESTRA_WEB_ENTRY={}",
+            shell_quote(&web_entry.display().to_string())
+        ));
+    }
+    let exports = exports.join("\n");
     match &app.command {
         Some(command) => format!(
-            "#!/bin/sh\nset -e\ncd {source}\nexec sh -c {} sh \"$@\"\n",
+            "#!/bin/sh\nset -e\n{exports}\ncd {source}\nexec sh -c {} sh \"$@\"\n",
             shell_quote(&format!("{command} \"$@\""))
         ),
         None => format!(
-            "#!/bin/sh\nset -e\ncd {source}\nexec cargo run --manifest-path {} -- \"$@\"\n",
+            "#!/bin/sh\nset -e\n{exports}\ncd {source}\nexec cargo run --manifest-path {} -- \"$@\"\n",
             shell_quote(&app.source.join("Cargo.toml").display().to_string())
         ),
     }
 }
 
-fn registry_record(app: &SourceApp, wrapper: &Path) -> String {
+fn registry_record(app: &SourceApp, wrapper: &Path, assets: &StagedAssets) -> String {
     let command = app.command.clone().unwrap_or_default();
     let icon = app
         .icon
         .as_ref()
         .map(|path| path.display().to_string())
         .unwrap_or_default();
+    let staged_icon = assets
+        .icon
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    let web_dir = assets
+        .web_dir
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    let web_entry = assets
+        .web_entry
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    let mime_types = app.mime_types.join(";");
     format!(
-        "id = \"{}\"\nname = \"{}\"\nsource = \"{}\"\ncommand = \"{}\"\nwrapper = \"{}\"\nicon = \"{}\"\nautostart = \"{}\"\n",
+        "id = \"{}\"\nname = \"{}\"\nsource = \"{}\"\ncommand = \"{}\"\nwrapper = \"{}\"\nicon = \"{}\"\nstaged_icon = \"{}\"\nweb_dir = \"{}\"\nweb_entry = \"{}\"\nmime_types = \"{}\"\nautostart = \"{}\"\n",
         quote_value(&app.id),
         quote_value(&app.name),
         quote_value(&app.source.display().to_string()),
         quote_value(&command),
         quote_value(&wrapper.display().to_string()),
         quote_value(&icon),
+        quote_value(&staged_icon),
+        quote_value(&web_dir),
+        quote_value(&web_entry),
+        quote_value(&mime_types),
         app.autostart
     )
-}
-
-fn desktop_entry(app: &SourceApp, wrapper: &Path) -> String {
-    let icon = app
-        .icon
-        .as_ref()
-        .filter(|path| path.exists())
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| app.id.clone());
-    format!(
-        "[Desktop Entry]\nType=Application\nName={}\nExec={} %U\nIcon={}\nTerminal=false\nCategories=Development;Utility;\nStartupNotify=true\n",
-        desktop_value(&app.name),
-        desktop_exec(wrapper),
-        desktop_value(&icon)
-    )
-}
-
-fn read_app_section(
-    path: &Path,
-    source: &Path,
-) -> (Option<String>, Option<String>, Option<PathBuf>) {
-    let Ok(text) = fs::read_to_string(path) else {
-        return (None, None, None);
-    };
-    let mut in_app = false;
-    let mut id = None;
-    let mut name = None;
-    let mut icon = None;
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') {
-            in_app = trimmed == "[app]";
-            continue;
-        }
-        if !in_app {
-            continue;
-        }
-        if trimmed.starts_with("id") {
-            id = toml_string_value(trimmed);
-        } else if trimmed.starts_with("name") {
-            name = toml_string_value(trimmed);
-        } else if trimmed.starts_with("icon") {
-            icon = toml_string_value(trimmed).map(|path| source.join(path));
-        }
-    }
-    (id, name, icon)
 }
 
 fn package_name(path: &Path) -> Option<String> {
@@ -354,14 +340,6 @@ fn quote_value(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-fn desktop_value(value: &str) -> String {
-    value.replace(['\n', '\r'], " ")
-}
-
-fn desktop_exec(path: &Path) -> String {
-    path.display().to_string().replace(' ', "\\ ")
-}
-
 fn sanitize_id(value: &str) -> String {
     let mut output = String::new();
     for ch in value.chars() {
@@ -392,7 +370,7 @@ fn absolute_path(path: &Path) -> Result<PathBuf, String> {
             .map(|cwd| cwd.join(path))?
     };
     if path.exists() {
-        Ok(path)
+        path.canonicalize().map_err(|error| error.to_string())
     } else {
         Err(format!("source path does not exist: {}", path.display()))
     }

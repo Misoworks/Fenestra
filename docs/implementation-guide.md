@@ -1,0 +1,245 @@
+# Fenestra Implementation Guide
+
+Fenestra is the shared web runtime manager and embedded CEF webview system. Use it when an app wants
+HTML/CSS/JS UI with a Rust host, local runtime resolution, native desktop services, and a strict
+bridge. Stuk integration lives in `stuk-fenestra`; the Fenestra crates do not depend on Stuk.
+
+## Crate Map
+
+| Crate | Owns |
+| --- | --- |
+| `fenestra-runtime` | CEF runtime discovery, user-local installs, package metadata, pruning, and validation |
+| `fenestra-cef` | CEF window launch, OSR native host, bridge dispatch, lifecycle, activity leases, desktop services |
+| `fenestra-cli` | `fenestra new`, source installs, runtime commands, and bundle staging |
+| `stuk-fenestra` | Adapter from Stuk apps to Fenestra webview windows and widgets |
+
+Runtime files are user-local by default:
+
+```txt
+~/.local/share/fenestra/runtimes/cef/
+```
+
+Apps can use a system runtime, a bundled runtime, or a user-local runtime. If a client CEF runtime is
+missing and user installs are allowed, Fenestra installs into the user-local runtime directory rather
+than system-wide.
+
+## Standalone Window
+
+Use `CefWindow` for a pure Fenestra app:
+
+```rust
+use fenestra_cef::{
+    CefResult, CefWindow, CefWindowChrome, WindowBackgroundEffect, WindowRegion,
+};
+
+fn main() -> CefResult<()> {
+    if fenestra_cef::run_fenestra_host_from_args(&std::env::args().collect::<Vec<_>>()) {
+        return Ok(());
+    }
+
+    let process = CefWindow::new()
+        .app_id("com.example.notes")
+        .title("Notes")
+        .entry("ui/dist/index.html")
+        .dev_server("http://localhost:5173")
+        .fenestra_chrome()
+        .glass()
+        .blur_region(WindowRegion::rounded_rect(280, 720, 14))
+        .launch_or_install()?;
+
+    process.wait()?;
+    Ok(())
+}
+```
+
+Window modes:
+
+| Builder | Result |
+| --- | --- |
+| `system_chrome()` | Normal OS/window-manager decorations |
+| `fenestra_chrome()` | Fenestra-owned OSR native window with built-in titlebar |
+| `frameless()` | Undecorated OSR window; app supplies controls and drag regions |
+| `frameless().glass()` | Transparent OSR window with compositor blur/materials |
+| `shell_surface(...)` | Layer-shell surface for palette/panel-style Linux surfaces |
+
+Declare drag and control regions when the web UI owns the titlebar:
+
+```rust
+CefWindow::new()
+    .frameless()
+    .titlebar_drag_region(42)
+    .control_region(CefWindowControlAction::Close, WindowRegionRect::new(-44, 8, 28, 28));
+```
+
+## Dev Workflow
+
+For Vite-style apps:
+
+```rust
+CefWindow::new()
+    .entry("ui/dist/index.html")
+    .vite_dev_server(5173);
+```
+
+`dev_server(...)` waits for loopback variants including `localhost`, `127.0.0.1`, and `::1`, so
+normal Vite/Bun workflows do not need host workarounds.
+
+Use source installs for local desktop entries during development:
+
+```sh
+fenestra install
+fenestra update
+fenestra update --all
+```
+
+Use bundling for distributable app trees and native package staging:
+
+```sh
+fenestra bundle . --target portable
+fenestra bundle . --target deb --release
+fenestra bundle . --target appimage
+fenestra bundle . --target dmg --binary target/aarch64-apple-darwin/release/my-app
+fenestra bundle . --target msi --binary target/x86_64-pc-windows-msvc/release/my-app.exe
+```
+
+`Fenestra.toml` can pin web build and package metadata:
+
+```toml
+[app]
+id = "com.example.notes"
+name = "Notes"
+version = "0.1.0"
+icon = "assets/icon.png"
+cargo_manifest = "desktop/Cargo.toml"
+mime_types = ["inode/directory"]
+
+[install]
+command = "cargo run --manifest-path desktop/Cargo.toml --"
+
+[web]
+root = "ui"
+dist = "ui/dist"
+entry = "ui/dist/index.html"
+build = "bun run build"
+```
+
+## Bridge
+
+Register native commands explicitly:
+
+```rust
+let process = CefWindow::new()
+    .entry("ui/dist/index.html")
+    .bridge_descriptor_handler(
+        BridgeCommandDescriptor::new("notes.list")
+            .target("desktop")
+            .permission("notes"),
+        |_| Ok(BridgeResponse::json(serde_json::json!([
+            { "id": "1", "title": "Product notes" }
+        ]))),
+    )
+    .launch_or_install()?;
+```
+
+Invoke from web:
+
+```js
+const notes = await window.fenestra.bridge.invoke("notes.list");
+```
+
+Use `BridgeCommandDescriptor` for permissions, target gating, and allowed origins. Keep privileged
+work in Rust and expose small command surfaces to the web page.
+
+## Activity Leases
+
+Hidden UI can be throttled or hibernated, but Fenestra must not hibernate while active work is in
+progress. Long-running jobs should usually live on the Rust side; leases tell Fenestra that work is
+active and hibernation must wait.
+
+Rust-side lease:
+
+```rust
+let lease = process.begin_activity("backup.sync");
+run_backup_job()?;
+lease.end();
+```
+
+Use a non-blocking lease for diagnostics or status-only activity:
+
+```rust
+let lease = process.begin_activity_with(
+    ActivityOptions::new("metrics.flush").prevents_hibernation(false),
+);
+```
+
+Web-side lease:
+
+```js
+const lease = await window.fenestra.activity.begin({
+  name: "ai.indexing",
+  preventsHibernation: true,
+});
+
+try {
+  await runIndexing();
+} finally {
+  await lease.end();
+}
+```
+
+Activity leases are not a replacement for durable workers. If a task must survive window closure,
+network loss, or app restart, move it to a Rust worker and persist progress.
+
+## Lifecycle
+
+Lifecycle policy controls rendering and hibernation:
+
+```rust
+CefWindow::new()
+    .hidden()
+    .hide_on_blur(true)
+    .background_frame_rate(1)
+    .hibernate_after(Duration::from_secs(300));
+```
+
+Defaults are palette-friendly: hidden windows suspend and throttle but stay warm. To trade instant
+resume for lower memory, opt in:
+
+```rust
+CefWindow::new()
+    .hidden()
+    .lifecycle_policy(CefLifecyclePolicy::memory_saver_hidden_window());
+```
+
+Web lifecycle events:
+
+```js
+window.fenestra.lifecycle.listen(({ state, reason }) => {});
+window.addEventListener("fenestra:suspend", event => {});
+window.addEventListener("fenestra:resume", event => {});
+window.addEventListener("fenestra:hibernate", event => {});
+```
+
+## Desktop Services
+
+Desktop integrations are declared on the window:
+
+```rust
+CefWindow::new()
+    .tray_icon(TrayIcon::new("main", "Notes"))
+    .autostart(AutostartEntry::new("notes", "Notes", "notes --background"))
+    .global_shortcut(GlobalShortcutRegistration::new("show", "Ctrl+Space"))
+    .single_instance(SingleInstancePolicy::FocusExisting);
+```
+
+Events are forwarded to web as `fenestra:*` events and can also be polled from Rust with
+`take_desktop_events()`.
+
+## Platform Notes
+
+Linux is Wayland-first. Frameless, transparent, glass, shell surfaces, and rounded/region-aware
+composition use the OSR native host path. Windows and macOS support should use the same public API,
+with backend-specific host implementations behind Fenestra.
+
+Do not switch to system webviews for consistency. If a platform needs another backend, it should
+preserve the Fenestra bridge, lifecycle, activity, runtime, and window APIs.

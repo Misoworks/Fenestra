@@ -11,6 +11,8 @@ pub(super) struct BundleApp {
     pub name: String,
     pub version: String,
     pub icon: Option<PathBuf>,
+    pub mime_types: Vec<String>,
+    pub cargo_manifest: PathBuf,
     pub source_dir: PathBuf,
     pub cargo_package: String,
     pub web: Option<WebBundle>,
@@ -48,6 +50,9 @@ struct AppSection {
     name: Option<String>,
     version: Option<String>,
     icon: Option<String>,
+    #[serde(default)]
+    mime_types: Vec<String>,
+    cargo_manifest: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -62,12 +67,14 @@ pub(super) fn resolve_app(source: &Path, overrides: ConfigOverrides) -> Result<B
     let source_dir = absolute_path(source)?;
     let fenestra = read_fenestra_file(&source_dir)?;
     let stuk = read_stuk_file(&source_dir)?;
-    let cargo_package = cargo_package_name(&source_dir.join("Cargo.toml")).ok_or_else(|| {
-        format!(
-            "missing package name in {}",
-            source_dir.join("Cargo.toml").display()
-        )
-    })?;
+    let cargo_manifest = fenestra
+        .app
+        .cargo_manifest
+        .as_ref()
+        .map(|path| source_dir.join(path))
+        .unwrap_or_else(|| source_dir.join("Cargo.toml"));
+    let cargo_package = cargo_package_name(&cargo_manifest)
+        .ok_or_else(|| format!("missing package name in {}", cargo_manifest.display()))?;
     let web = resolve_web(&source_dir, &fenestra.web, &stuk, &overrides)?;
 
     let name = overrides
@@ -85,20 +92,22 @@ pub(super) fn resolve_app(source: &Path, overrides: ConfigOverrides) -> Result<B
         .or(fenestra.app.version)
         .or_else(|| stuk.app_version.clone())
         .unwrap_or_else(|| {
-            cargo_package_version(&source_dir.join("Cargo.toml"))
-                .unwrap_or_else(|| "0.1.0".to_string())
+            cargo_package_version(&cargo_manifest).unwrap_or_else(|| "0.1.0".to_string())
         });
     let icon = fenestra
         .app
         .icon
         .or_else(|| stuk.icon.clone())
-        .map(|icon| source_dir.join(icon));
+        .map(|icon| source_dir.join(icon))
+        .or_else(|| detect_icon(&source_dir));
 
     Ok(BundleApp {
         id: sanitize_id(&id),
         name,
         version,
         icon,
+        mime_types: fenestra.app.mime_types,
+        cargo_manifest,
         source_dir,
         cargo_package,
         web,
@@ -191,7 +200,7 @@ fn read_stuk_file(source_dir: &Path) -> Result<StukFile, String> {
     }
     let text = fs::read_to_string(&path).map_err(|error| error.to_string())?;
     let value = text
-        .parse::<toml::Value>()
+        .parse::<toml::Table>()
         .map_err(|error| format!("failed to parse {}: {error}", path.display()))?;
     let app = value.get("app").and_then(toml::Value::as_table);
     let webview = value.get("webview").and_then(toml::Value::as_table);
@@ -228,6 +237,25 @@ fn default_web_entry(source_dir: &Path) -> Option<PathBuf> {
     .iter()
     .map(PathBuf::from)
     .find(|entry| source_dir.join(entry).is_file())
+}
+
+fn detect_icon(source_dir: &Path) -> Option<PathBuf> {
+    [
+        "static/icon.svg",
+        "static/favicon.svg",
+        "src/lib/assets/favicon.svg",
+        "favicon.svg",
+        "icon.svg",
+        "icon.png",
+        "icons/icon.svg",
+        "icons/icon.png",
+        "desktop/icons/icon.svg",
+        "static/icon.png",
+        "desktop/icons/icon.png",
+    ]
+    .iter()
+    .map(|icon| source_dir.join(icon))
+    .find(|icon| icon.is_file())
 }
 
 fn detect_web_build_command(root: &Path) -> Option<String> {

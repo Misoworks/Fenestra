@@ -193,11 +193,10 @@ fn build_web(app: &BundleApp) -> Result<(), String> {
 }
 
 fn build_rust(app: &BundleApp, format: BundleFormat, release: bool) -> Result<(), String> {
-    let cargo_manifest = app.source_dir.join("Cargo.toml");
-    if !cargo_manifest.is_file() {
+    if !app.cargo_manifest.is_file() {
         return Err(format!(
             "missing Cargo.toml at {}",
-            cargo_manifest.display()
+            app.cargo_manifest.display()
         ));
     }
     let target = build_target_for_format(format);
@@ -205,7 +204,7 @@ fn build_rust(app: &BundleApp, format: BundleFormat, release: bool) -> Result<()
     command
         .arg("build")
         .arg("--manifest-path")
-        .arg(cargo_manifest);
+        .arg(&app.cargo_manifest);
     if release {
         command.arg("--release");
     }

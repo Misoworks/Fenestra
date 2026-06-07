@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     io::Write,
     os::unix::net::{UnixListener, UnixStream},
     path::PathBuf,
@@ -218,6 +219,7 @@ struct OsrNativeHost {
     hibernate_deadline: Option<Instant>,
     hibernate_commit_deadline: Option<Instant>,
     closing_deadline: Option<Instant>,
+    activity_hibernation_blockers: BTreeSet<String>,
     presented: bool,
     started: Instant,
 }
@@ -244,12 +246,20 @@ enum LifecycleState {
     Hibernated,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum HostControl {
     Show,
     Hide,
     Focus,
     Visible(bool),
+    ActivityBegin(HostActivity),
+    ActivityEnd(HostActivity),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HostActivity {
+    id: String,
+    prevents_hibernation: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -340,6 +350,7 @@ impl OsrNativeHost {
             hibernate_deadline,
             hibernate_commit_deadline: None,
             closing_deadline: None,
+            activity_hibernation_blockers: BTreeSet::new(),
             presented: false,
             started: Instant::now(),
         }
@@ -500,11 +511,7 @@ impl OsrNativeHost {
         }
         self.lifecycle_state = LifecycleState::Suspended;
         self.hibernate_commit_deadline = None;
-        self.hibernate_deadline = self
-            .config
-            .lifecycle
-            .hibernate_after
-            .map(|delay| Instant::now() + delay);
+        self.schedule_hibernate_deadline();
         self.send_lifecycle(LifecycleState::Suspended, reason);
     }
 
@@ -527,7 +534,10 @@ impl OsrNativeHost {
     }
 
     fn begin_hibernate(&mut self, reason: &str) {
-        if self.lifecycle_state != LifecycleState::Suspended || self.child.is_none() {
+        if self.lifecycle_state != LifecycleState::Suspended
+            || self.child.is_none()
+            || self.has_hibernation_blockers()
+        {
             return;
         }
         self.lifecycle_state = LifecycleState::Hibernating;
@@ -670,6 +680,12 @@ impl OsrNativeHost {
                 }
                 OsrHostEvent::HostControl(HostControl::Visible(false)) => {
                     self.hide_window("hidden")
+                }
+                OsrHostEvent::HostControl(HostControl::ActivityBegin(activity)) => {
+                    self.begin_activity(activity)
+                }
+                OsrHostEvent::HostControl(HostControl::ActivityEnd(activity)) => {
+                    self.end_activity(activity)
                 }
                 OsrHostEvent::Disconnected => {
                     self.socket = None;
@@ -1417,6 +1433,10 @@ impl ApplicationHandler for OsrNativeHost {
             return;
         }
         if let Some(deadline) = self.hibernate_deadline {
+            if self.has_hibernation_blockers() {
+                self.hibernate_deadline = None;
+                return;
+            }
             if Instant::now() >= deadline {
                 self.begin_hibernate("idle");
                 return;
@@ -1430,6 +1450,46 @@ impl ApplicationHandler for OsrNativeHost {
         {
             event_loop.exit();
         }
+    }
+}
+
+impl OsrNativeHost {
+    fn begin_activity(&mut self, activity: HostActivity) {
+        if !activity.prevents_hibernation {
+            return;
+        }
+        self.activity_hibernation_blockers.insert(activity.id);
+        self.hibernate_deadline = None;
+        if self.lifecycle_state == LifecycleState::Hibernating {
+            self.lifecycle_state = LifecycleState::Suspended;
+            self.hibernate_commit_deadline = None;
+            self.send_lifecycle(LifecycleState::Suspended, "activity");
+        }
+    }
+
+    fn end_activity(&mut self, activity: HostActivity) {
+        if !activity.prevents_hibernation {
+            return;
+        }
+        self.activity_hibernation_blockers.remove(&activity.id);
+        if self.lifecycle_state == LifecycleState::Suspended {
+            self.schedule_hibernate_deadline();
+        }
+    }
+
+    fn has_hibernation_blockers(&self) -> bool {
+        !self.activity_hibernation_blockers.is_empty()
+    }
+
+    fn schedule_hibernate_deadline(&mut self) {
+        self.hibernate_deadline = if self.has_hibernation_blockers() {
+            None
+        } else {
+            self.config
+                .lifecycle
+                .hibernate_after
+                .map(|delay| Instant::now() + delay)
+        };
     }
 }
 
@@ -1647,6 +1707,8 @@ fn host_control_from_parts(command: &str, value: &str) -> Option<HostControl> {
         "show" => Some(HostControl::Show),
         "hide" => Some(HostControl::Hide),
         "focus" => Some(HostControl::Focus),
+        "activity.begin" => activity_control_value(value).map(HostControl::ActivityBegin),
+        "activity.end" => activity_control_value(value).map(HostControl::ActivityEnd),
         _ => None,
     }
 }
@@ -1657,6 +1719,18 @@ fn bool_control_value(value: &str) -> Option<bool> {
         "0" | "false" | "no" | "hide" | "hidden" => Some(false),
         _ => None,
     }
+}
+
+fn activity_control_value(value: &str) -> Option<HostActivity> {
+    let value = serde_json::from_str::<serde_json::Value>(value).ok()?;
+    Some(HostActivity {
+        id: value.get("id")?.as_str()?.to_string(),
+        prevents_hibernation: value
+            .get("preventsHibernation")
+            .or_else(|| value.get("prevents_hibernation"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true),
+    })
 }
 
 fn path_value(value: &serde_json::Value, key: &str) -> Result<PathBuf, String> {

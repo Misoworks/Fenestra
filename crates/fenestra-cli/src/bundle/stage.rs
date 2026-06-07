@@ -11,7 +11,7 @@ use super::{
         windows_manifest,
     },
 };
-use crate::bundle::build_target_for_format;
+use crate::{bundle::build_target_for_format, icon_assets};
 
 #[derive(Debug)]
 pub(super) struct StagedBundle {
@@ -66,7 +66,7 @@ pub(super) fn binary_path(app: &BundleApp, format: BundleFormat, release: bool) 
     let profile = if release { "release" } else { "debug" };
     let file_name = executable_name(app, format);
     let rust_target = build_target_for_format(format).and_then(|target| target.rust_target());
-    let candidates = app
+    let mut candidates = app
         .source_dir
         .ancestors()
         .map(|ancestor| {
@@ -77,6 +77,13 @@ pub(super) fn binary_path(app: &BundleApp, format: BundleFormat, release: bool) 
             path.join(profile).join(&file_name)
         })
         .collect::<Vec<_>>();
+    if let Some(manifest_dir) = app.cargo_manifest.parent() {
+        let mut path = manifest_dir.join("target");
+        if let Some(rust_target) = rust_target {
+            path = path.join(rust_target);
+        }
+        candidates.insert(0, path.join(profile).join(&file_name));
+    }
     candidates
         .iter()
         .find(|candidate| candidate.is_file())
@@ -142,9 +149,10 @@ fn stage_appimage(
     copy_binary(binary, &bin_dir.join(executable))?;
     fs::write(app_dir.join("AppRun"), app_run(executable)).map_err(|error| error.to_string())?;
     make_executable(&app_dir.join("AppRun")).map_err(|error| error.to_string())?;
+    let icon = stage_appimage_icon(app, &app_dir)?;
     fs::write(
         app_dir.join(format!("{}.desktop", app.id)),
-        desktop_entry(app, executable),
+        desktop_entry(app, executable, icon.as_deref()),
     )
     .map_err(|error| error.to_string())?;
     stage_resources(
@@ -171,7 +179,7 @@ fn stage_unix_root(
     copy_binary(binary, &bin_dir.join(executable))?;
     fs::write(
         desktop_dir.join(format!("{}.desktop", app.id)),
-        desktop_entry(app, executable),
+        desktop_entry(app, executable, linux_icon_path(app, format).as_deref()),
     )
     .map_err(|error| error.to_string())?;
     if format == BundleFormat::Linux {
@@ -183,6 +191,44 @@ fn stage_unix_root(
     }
     stage_resources(app, format, &resources)?;
     Ok(app_dir)
+}
+
+fn linux_icon_path(app: &BundleApp, format: BundleFormat) -> Option<String> {
+    if !matches!(
+        format,
+        BundleFormat::Linux | BundleFormat::Deb | BundleFormat::Rpm
+    ) {
+        return None;
+    }
+    let icon = app.icon.as_ref().filter(|icon| icon.is_file())?;
+    if icon
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("svg"))
+    {
+        return Some(format!(
+            "/usr/share/fenestra/{}/icons/scalable/apps/{}.svg",
+            app.id, app.id
+        ));
+    }
+    Some(format!(
+        "/usr/share/fenestra/{}/icons/512x512/apps/{}.png",
+        app.id, app.id
+    ))
+}
+
+fn stage_appimage_icon(app: &BundleApp, app_dir: &Path) -> Result<Option<String>, String> {
+    let Some(icon) = app.icon.as_ref().filter(|icon| icon.is_file()) else {
+        return Ok(None);
+    };
+    let Some(extension) = icon.extension() else {
+        return Ok(None);
+    };
+    let extension = extension.to_string_lossy();
+    fs::copy(icon, app_dir.join(format!("{}.{}", app.id, extension)))
+        .map_err(|error| error.to_string())?;
+    icon_assets::stage_icon_set(&app.id, icon, &app_dir.join("usr/share/icons/hicolor"))?;
+    Ok(Some(app.id.clone()))
 }
 
 fn stage_resources(app: &BundleApp, format: BundleFormat, resources: &Path) -> Result<(), String> {
@@ -200,6 +246,7 @@ fn stage_resources(app: &BundleApp, format: BundleFormat, resources: &Path) -> R
     {
         let name = icon.file_name().unwrap_or_default().to_os_string();
         fs::copy(icon, resources.join(name)).map_err(|error| error.to_string())?;
+        icon_assets::stage_icon_set(&app.id, icon, &resources.join("icons"))?;
     }
     if let Some(web) = &app.web {
         let web_source = if web.dist.exists() {

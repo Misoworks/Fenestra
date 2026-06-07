@@ -11,6 +11,10 @@ Runtime files live under:
 ~/.local/share/fenestra/runtimes/cef/
 ```
 
+For a practical map of the crates, window modes, bridge, activity leases, lifecycle, desktop
+services, dev workflow, and bundling, see
+[`docs/implementation-guide.md`](docs/implementation-guide.md).
+
 ## Standalone Windows
 
 Fenestra has three standalone window modes:
@@ -52,16 +56,17 @@ cargo run -p fenestra-cli --bin fenestra -- new my-notes
 Register a source checkout as a local desktop app:
 
 ```sh
-cargo run -p fenestra-cli --bin fenestra -- install .
+cargo run -p fenestra-cli --bin fenestra -- install
 cargo run -p fenestra-cli --bin fenestra -- install . --autostart
+cargo run -p fenestra-cli --bin fenestra -- update
 cargo run -p fenestra-cli --bin fenestra -- update --all
 ```
 
 Source installs are user-local. Fenestra writes launchers and registry records under
 `~/.local/share/fenestra/apps/<app-id>/` and, on Linux desktops, writes `.desktop` files under
 `~/.local/share/applications/`. Passing `--autostart` also writes an autostart entry under
-`~/.config/autostart/`. Updating a registered git checkout runs `git pull --ff-only` and refreshes
-the launcher metadata.
+`~/.config/autostart/`. Updating rebuilds configured web assets, restages the app, and refreshes
+the launcher metadata from the current source checkout.
 
 ## Bundles
 
@@ -98,6 +103,11 @@ id = "com.example.notes"
 name = "Notes"
 version = "0.1.0"
 icon = "assets/icon.png"
+cargo_manifest = "desktop/Cargo.toml"
+mime_types = ["inode/directory"]
+
+[install]
+command = "cargo run --manifest-path desktop/Cargo.toml --"
 
 [web]
 root = "ui"
@@ -209,6 +219,26 @@ window.addEventListener("fenestra:suspend", event => {});
 window.addEventListener("fenestra:resume", event => {});
 window.addEventListener("fenestra:hibernate", event => {});
 ```
+
+Activity leases prevent hibernation while declared work is active:
+
+```rust
+let lease = process.begin_activity("backup.sync");
+run_backup_job()?;
+lease.end();
+```
+
+```js
+const lease = await window.fenestra.activity.begin({ name: "ai.indexing" });
+try {
+  await runIndexing();
+} finally {
+  await lease.end();
+}
+```
+
+Use Rust services for durable long-running jobs. Activity leases only tell Fenestra that a running
+window or webview process should not be hibernated while that work is active.
 
 ## Palette Windows
 

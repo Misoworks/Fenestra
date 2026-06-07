@@ -62,7 +62,7 @@ pub(crate) fn launch_process(
             "shell_surface": crate::osr_protocol::shell_surface_to_json(config.shell_surface.as_ref()),
             "background_effect": config.effective_background_effect().as_str(),
             "chrome": config.chrome.as_str(),
-            "bridge_commands": config.bridge.commands(),
+            "bridge_commands": crate::activity::bridge_commands_with_internal(config.bridge.commands()),
             "regions": crate::osr_protocol::regions_to_json(&config.regions),
             "drag_regions": crate::osr_protocol::rects_to_json(&config.drag_regions),
             "drag_exclusion_regions": crate::osr_protocol::rects_to_json(&config.drag_exclusion_regions),
@@ -89,6 +89,7 @@ pub(crate) fn launch_process(
             message: format!("failed to launch Fenestra OSR host: {error}"),
         })?;
         metrics.mark(format!("osr_host.spawned.pid.{}", child.id()));
+        let activity = crate::activity::ActivityRegistry::default();
         let bridge_dispatch = spawn_bridge_dispatch(
             &mut child,
             BridgeRuntime::new(
@@ -96,6 +97,7 @@ pub(crate) fn launch_process(
                 config.bridge.clone(),
                 config.security.clone(),
             ),
+            activity.clone(),
         );
         Ok(CefProcess {
             child: ManagedChild::new(child),
@@ -105,6 +107,7 @@ pub(crate) fn launch_process(
             desktop_services: None,
             desktop_event_thread: None,
             desktop_event_running: None,
+            activity,
             metrics,
         })
     }
