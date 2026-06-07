@@ -4,6 +4,7 @@ pub(super) fn bundle_toml(app: &BundleApp, format: BundleFormat, executable: &st
     let web_dist = app
         .web
         .as_ref()
+        .filter(|web| web.has_local_assets)
         .map(|web| web.dist.display().to_string())
         .unwrap_or_default();
     format!(
@@ -19,12 +20,21 @@ pub(super) fn bundle_toml(app: &BundleApp, format: BundleFormat, executable: &st
 
 pub(super) fn web_toml(app: &BundleApp) -> Option<String> {
     let web = app.web.as_ref()?;
+    let allowed_origins = web
+        .allowed_origins
+        .iter()
+        .map(|origin| format!("\"{}\"", quote(origin)))
+        .collect::<Vec<_>>()
+        .join(", ");
     Some(format!(
-        "root = \"{}\"\ndist = \"{}\"\nentry = \"{}\"\nbuild = \"{}\"\n",
+        "root = \"{}\"\ndist = \"{}\"\nentry = \"{}\"\nbuild = \"{}\"\nurl = \"{}\"\ndev_url = \"{}\"\nallowed_origins = [{}]\n",
         quote(&web.root.display().to_string()),
         quote(&web.dist.display().to_string()),
         quote(&web.entry.display().to_string()),
-        quote(web.build_command.as_deref().unwrap_or_default())
+        quote(web.build_command.as_deref().unwrap_or_default()),
+        quote(web.url.as_deref().unwrap_or_default()),
+        quote(web.dev_url.as_deref().unwrap_or_default()),
+        allowed_origins
     ))
 }
 

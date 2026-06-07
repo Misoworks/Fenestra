@@ -248,7 +248,9 @@ fn stage_resources(app: &BundleApp, format: BundleFormat, resources: &Path) -> R
         fs::copy(icon, resources.join(name)).map_err(|error| error.to_string())?;
         icon_assets::stage_icon_set(&app.id, icon, &resources.join("icons"))?;
     }
-    if let Some(web) = &app.web {
+    if let Some(web) = &app.web
+        && web.has_local_assets
+    {
         let web_source = if web.dist.exists() {
             web.dist.as_path()
         } else {

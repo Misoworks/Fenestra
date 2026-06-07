@@ -380,6 +380,7 @@ bool HandleWindowCommand(CefRefPtr<CefBrowser> browser,
 	  } else if (command == "hide") {
 	    window->Hide();
 	  } else if (command == "focus") {
+	    window->Restore();
 	    window->Show();
 	    window->Activate();
 	  } else if (command == "minimize") {
@@ -482,6 +483,7 @@ void FenestraHandler::ApplyHostControl(const std::string& command,
     } else if (command == "hide") {
       window->Hide();
     } else if (command == "focus") {
+      window->Restore();
       window->Show();
       window->Activate();
     }

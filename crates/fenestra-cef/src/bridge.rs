@@ -197,6 +197,38 @@ impl Default for WebViewSecurity {
     }
 }
 
+impl WebViewSecurity {
+    pub fn allow_origin(mut self, origin: impl Into<String>) -> Self {
+        self.remote_content = true;
+        let origin = origin.into();
+        if !self
+            .allowed_origins
+            .iter()
+            .any(|allowed| allowed == &origin)
+        {
+            self.allowed_origins.push(origin);
+        }
+        self
+    }
+
+    pub fn allow_bridge_permission(mut self, permission: impl Into<String>) -> Self {
+        let permission = permission.into();
+        if !self
+            .allowed_bridge_permissions
+            .iter()
+            .any(|allowed| allowed == &permission)
+        {
+            self.allowed_bridge_permissions.push(permission);
+        }
+        self
+    }
+
+    pub fn remote_content(mut self, enabled: bool) -> Self {
+        self.remote_content = enabled;
+        self
+    }
+}
+
 fn validate_permissions(
     security: &WebViewSecurity,
     command: &BridgeCommand,

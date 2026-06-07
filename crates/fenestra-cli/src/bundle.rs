@@ -171,6 +171,9 @@ fn build_web(app: &BundleApp) -> Result<(), String> {
     let Some(web) = &app.web else {
         return Ok(());
     };
+    if !web.has_local_assets {
+        return Ok(());
+    }
     let Some(command) = &web.build_command else {
         return Ok(());
     };

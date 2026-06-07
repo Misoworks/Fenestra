@@ -114,7 +114,14 @@ root = "ui"
 dist = "ui/dist"
 entry = "ui/dist/index.html"
 build = "bun run build"
+url = "https://app.example.com"
+dev_url = "http://localhost:5173"
+allowed_origins = ["https://app.example.com", "http://localhost:5173"]
 ```
+
+For a hosted app, omit `root`, `dist`, `entry`, and `build`; Fenestra will load `url` directly and
+will not stage local web assets. `dev_url` overrides `url` while developing and waits for normal
+loopback variants such as `localhost`, `127.0.0.1`, and `::1`.
 
 ## Desktop Services
 

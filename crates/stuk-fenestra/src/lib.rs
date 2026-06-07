@@ -99,6 +99,7 @@ type WebViewResult<T> = std::result::Result<T, WebViewError>;
 #[derive(Clone, Debug)]
 pub struct WebViewConfig {
     pub entry: Option<String>,
+    pub url: Option<String>,
     pub dev_url: Option<String>,
     pub dev_command: Option<String>,
     pub app_id: Option<String>,
@@ -135,6 +136,7 @@ impl Default for WebViewConfig {
     fn default() -> Self {
         Self {
             entry: None,
+            url: None,
             dev_url: None,
             dev_command: None,
             app_id: None,
@@ -242,12 +244,27 @@ impl Default for WebViewSecurity {
 
 impl WebViewSecurity {
     pub fn allow_origin(mut self, origin: impl Into<String>) -> Self {
-        self.allowed_origins.push(origin.into());
+        self.remote_content = true;
+        let origin = origin.into();
+        if !self
+            .allowed_origins
+            .iter()
+            .any(|allowed| allowed == &origin)
+        {
+            self.allowed_origins.push(origin);
+        }
         self
     }
 
     pub fn allow_bridge_permission(mut self, permission: impl Into<String>) -> Self {
-        self.allowed_bridge_permissions.push(permission.into());
+        let permission = permission.into();
+        if !self
+            .allowed_bridge_permissions
+            .iter()
+            .any(|allowed| allowed == &permission)
+        {
+            self.allowed_bridge_permissions.push(permission);
+        }
         self
     }
 
@@ -486,6 +503,7 @@ fn platform_event_payload(event: PlatformEvent) -> (&'static str, serde_json::Va
                 "policy": format!("{:?}", activation.policy),
                 "arguments": activation.arguments,
                 "workingDirectory": activation.working_directory,
+                "activationToken": activation.activation_token,
             }),
         ),
     }
@@ -502,6 +520,21 @@ impl WebViewWindow {
     pub fn entry(mut self, path: impl Into<String>) -> Self {
         self.config.entry = Some(path.into());
         self
+    }
+
+    pub fn url(mut self, url: impl Into<String>) -> Self {
+        let url = url.into();
+        allow_url_origin(&mut self.config.security, &url);
+        self.config.url = Some(url);
+        self
+    }
+
+    pub fn remote_url(self, url: impl Into<String>) -> Self {
+        self.url(url)
+    }
+
+    pub fn bundled_url(self, url: impl Into<String>) -> Self {
+        self.url(url)
     }
 
     pub fn dev_url(mut self, url: impl Into<String>) -> Self {
@@ -815,6 +848,15 @@ impl WebViewWindow {
         self
     }
 
+    pub fn allowed_origin(mut self, origin: impl Into<String>) -> Self {
+        allow_origin(&mut self.config.security, origin.into());
+        self
+    }
+
+    pub fn allowed_bridge_origin(self, origin: impl Into<String>) -> Self {
+        self.allowed_origin(origin)
+    }
+
     pub fn runtime(mut self, runtime: RuntimeConfig) -> Self {
         self.config.runtime = runtime;
         self
@@ -925,6 +967,7 @@ impl WebViewWindow {
         let mut window = fenestra_cef::CefWindow::new();
         window.config = fenestra_cef::CefConfig {
             entry: config.entry,
+            url: config.url,
             dev_url: config.dev_url,
             dev_command: config.dev_command,
             app_id: config.app_id,
@@ -1000,10 +1043,13 @@ impl WebViewWindow {
         if let Some(url) = &self.config.dev_url {
             return Ok(url.clone());
         }
+        if let Some(url) = &self.config.url {
+            return Ok(url.clone());
+        }
 
         let Some(entry) = &self.config.entry else {
             return Err(WebViewError::CreationFailed {
-                message: "webview has no entry or dev url".to_string(),
+                message: "webview has no entry, URL, or dev URL".to_string(),
             });
         };
         let (entry_path, suffix) = split_entry_suffix(entry);
@@ -2954,21 +3000,29 @@ fn allow_dev_origins(security: &mut WebViewSecurity, url: &str) {
     let Some(parts) = dev_url_parts(url) else {
         return;
     };
-    security.remote_content = true;
     for host in dev_origin_hosts(&parts.host) {
-        let origin = format!(
-            "{}://{}:{}",
-            parts.scheme,
-            format_url_host(&host),
-            parts.port
-        );
-        if !security
-            .allowed_origins
-            .iter()
-            .any(|allowed| allowed == &origin)
-        {
-            security.allowed_origins.push(origin);
-        }
+        allow_origin(security, format_origin(&parts.scheme, &host, parts.port));
+    }
+}
+
+fn allow_url_origin(security: &mut WebViewSecurity, url: &str) {
+    let Some(parts) = dev_url_parts(url) else {
+        return;
+    };
+    allow_origin(
+        security,
+        format_origin(&parts.scheme, &parts.host, parts.port),
+    );
+}
+
+fn allow_origin(security: &mut WebViewSecurity, origin: String) {
+    security.remote_content = true;
+    if !security
+        .allowed_origins
+        .iter()
+        .any(|allowed| allowed == &origin)
+    {
+        security.allowed_origins.push(origin);
     }
 }
 
@@ -3026,6 +3080,18 @@ fn is_loopback_host(host: &str) -> bool {
 
 fn is_unspecified_host(host: &str) -> bool {
     host == "0.0.0.0" || host == "::"
+}
+
+fn format_origin(scheme: &str, host: &str, port: u16) -> String {
+    if is_default_port(scheme, port) {
+        format!("{}://{}", scheme, format_url_host(host))
+    } else {
+        format!("{}://{}:{}", scheme, format_url_host(host), port)
+    }
+}
+
+fn is_default_port(scheme: &str, port: u16) -> bool {
+    matches!((scheme, port), ("http", 80) | ("https", 443))
 }
 
 fn format_url_host(host: &str) -> String {
@@ -3163,5 +3229,49 @@ mod tests {
                 .any(|origin| origin == "http://127.0.0.1:5173")
         );
         assert!(origins.iter().any(|origin| origin == "http://[::1]:5173"));
+    }
+
+    #[test]
+    fn webview_url_sets_production_url_and_bridge_origin() {
+        let window = WebViewWindow::new().url("https://raday.lantharos.com/dashboard");
+
+        assert_eq!(
+            window.entry_url().unwrap(),
+            "https://raday.lantharos.com/dashboard"
+        );
+        assert!(window.config.security.remote_content);
+        assert!(
+            window
+                .config
+                .security
+                .allowed_origins
+                .iter()
+                .any(|origin| origin == "https://raday.lantharos.com")
+        );
+    }
+
+    #[test]
+    fn webview_dev_url_takes_precedence_over_production_url() {
+        let window = WebViewWindow::new()
+            .url("https://raday.lantharos.com")
+            .dev_url("http://localhost:5173");
+
+        assert_eq!(window.entry_url().unwrap(), "http://localhost:5173");
+        assert!(
+            window
+                .config
+                .security
+                .allowed_origins
+                .iter()
+                .any(|origin| origin == "https://raday.lantharos.com")
+        );
+        assert!(
+            window
+                .config
+                .security
+                .allowed_origins
+                .iter()
+                .any(|origin| origin == "http://localhost:5173")
+        );
     }
 }

@@ -108,6 +108,7 @@ pub fn run_fenestra_host_from_args(args: &[String]) -> bool {
 #[derive(Clone, Debug)]
 pub struct CefConfig {
     pub entry: Option<String>,
+    pub url: Option<String>,
     pub dev_url: Option<String>,
     pub dev_command: Option<String>,
     pub app_id: Option<String>,
@@ -142,6 +143,7 @@ impl Default for CefConfig {
     fn default() -> Self {
         Self {
             entry: None,
+            url: None,
             dev_url: None,
             dev_command: None,
             app_id: None,
@@ -453,13 +455,12 @@ impl CefProcess {
             services,
             running,
             move |event| {
-                if matches!(
-                    &event,
-                    PlatformEvent::SingleInstance(activation)
-                        if activation.policy == SingleInstancePolicy::FocusExisting
-                ) {
+                if let PlatformEvent::SingleInstance(activation) = &event
+                    && activation.policy == SingleInstancePolicy::FocusExisting
+                {
                     let _ = emitter.show();
-                    let _ = emitter.focus_window();
+                    let _ = emitter
+                        .focus_window_with_activation_token(activation.activation_token.as_deref());
                 }
                 let (name, payload) = platform_event_payload(event);
                 let _ = emitter.emit(name, payload);
@@ -534,6 +535,16 @@ impl BridgeEventEmitter {
         self.emit_host_control("focus", "1")
     }
 
+    pub fn focus_window_with_activation_token(&self, token: Option<&str>) -> bool {
+        self.emit_host_control(
+            "focus",
+            token
+                .map(str::trim)
+                .filter(|token| !token.is_empty())
+                .unwrap_or("1"),
+        )
+    }
+
     pub(crate) fn emit_activity_update(&self, update: &activity::ActivityHostUpdate) -> bool {
         let command = match update {
             activity::ActivityHostUpdate::Begin(_) => "activity.begin",
@@ -581,6 +592,7 @@ fn platform_event_payload(event: PlatformEvent) -> (&'static str, serde_json::Va
                 "policy": format!("{:?}", activation.policy),
                 "arguments": activation.arguments,
                 "workingDirectory": activation.working_directory,
+                "activationToken": activation.activation_token,
             }),
         ),
     }
@@ -597,6 +609,21 @@ impl CefWindow {
     pub fn entry(mut self, path: impl Into<String>) -> Self {
         self.config.entry = Some(path.into());
         self
+    }
+
+    pub fn url(mut self, url: impl Into<String>) -> Self {
+        let url = url.into();
+        allow_url_origin(&mut self.config.security, &url);
+        self.config.url = Some(url);
+        self
+    }
+
+    pub fn remote_url(self, url: impl Into<String>) -> Self {
+        self.url(url)
+    }
+
+    pub fn bundled_url(self, url: impl Into<String>) -> Self {
+        self.url(url)
     }
 
     pub fn dev_url(mut self, url: impl Into<String>) -> Self {
@@ -935,6 +962,15 @@ impl CefWindow {
         self
     }
 
+    pub fn allowed_origin(mut self, origin: impl Into<String>) -> Self {
+        allow_origin(&mut self.config.security, origin.into());
+        self
+    }
+
+    pub fn allowed_bridge_origin(self, origin: impl Into<String>) -> Self {
+        self.allowed_origin(origin)
+    }
+
     pub fn bridge_command_descriptor(mut self, descriptor: BridgeCommandDescriptor) -> Self {
         self.config.bridge.register_descriptor(descriptor);
         self
@@ -1033,19 +1069,22 @@ impl CefWindow {
             let desktop_services = None;
             metrics.mark("desktop_services.ready");
             self.ensure_default_bridge_handlers();
+            self.allow_configured_url_origins();
             let mut dev_server = self.start_dev_command(&metrics)?;
             let mut url = self.entry_url()?;
-            match self.wait_for_dev_server(dev_server.as_mut(), &url) {
-                Ok(ready_url) => {
-                    url = ready_url;
-                    allow_dev_origins(&mut self.config.security, &url);
-                    metrics.mark("dev_server.ready");
-                }
-                Err(error) => {
-                    if let Some(child) = dev_server {
-                        ManagedChild::new(child).terminate();
+            if self.config.dev_url.is_some() || dev_server.is_some() {
+                match self.wait_for_dev_server(dev_server.as_mut(), &url) {
+                    Ok(ready_url) => {
+                        url = ready_url;
+                        allow_dev_origins(&mut self.config.security, &url);
+                        metrics.mark("dev_server.ready");
                     }
-                    return Err(error);
+                    Err(error) => {
+                        if let Some(child) = dev_server {
+                            ManagedChild::new(child).terminate();
+                        }
+                        return Err(error);
+                    }
                 }
             }
             let mut process = if self.should_use_osr_host() {
@@ -1176,9 +1215,12 @@ impl CefWindow {
         if let Some(url) = &self.config.dev_url {
             return Ok(url.clone());
         }
+        if let Some(url) = &self.config.url {
+            return Ok(url.clone());
+        }
         let Some(entry) = &self.config.entry else {
             return Err(CefError::CreationFailed {
-                message: "CEF window has no entry or dev URL".to_string(),
+                message: "CEF window has no entry, URL, or dev URL".to_string(),
             });
         };
         let (entry_path, suffix) = split_entry_suffix(entry);
@@ -1197,6 +1239,15 @@ impl CefWindow {
                     "Bridge command `{command_name}` has no Rust handler"
                 )))
             });
+        }
+    }
+
+    fn allow_configured_url_origins(&mut self) {
+        if let Some(url) = self.config.url.clone() {
+            allow_url_origin(&mut self.config.security, &url);
+        }
+        if let Some(url) = self.config.dev_url.clone() {
+            allow_dev_origins(&mut self.config.security, &url);
         }
     }
 }
@@ -1650,14 +1701,31 @@ fn allow_dev_origins(security: &mut WebViewSecurity, url: &str) {
         let Some(parts) = dev_url_parts(&candidate.url) else {
             continue;
         };
-        let origin = format_dev_origin(&parts.scheme, &parts.host, parts.port);
-        if !security
-            .allowed_origins
-            .iter()
-            .any(|allowed| allowed == &origin)
-        {
-            security.allowed_origins.push(origin);
-        }
+        allow_origin(
+            security,
+            format_dev_origin(&parts.scheme, &parts.host, parts.port),
+        );
+    }
+}
+
+fn allow_url_origin(security: &mut WebViewSecurity, url: &str) {
+    let Some(parts) = dev_url_parts(url) else {
+        return;
+    };
+    allow_origin(
+        security,
+        format_dev_origin(&parts.scheme, &parts.host, parts.port),
+    );
+}
+
+fn allow_origin(security: &mut WebViewSecurity, origin: String) {
+    security.remote_content = true;
+    if !security
+        .allowed_origins
+        .iter()
+        .any(|allowed| allowed == &origin)
+    {
+        security.allowed_origins.push(origin);
     }
 }
 
@@ -1674,7 +1742,15 @@ fn format_dev_url(scheme: &str, host: &str, port: u16, suffix: &str) -> String {
 }
 
 fn format_dev_origin(scheme: &str, host: &str, port: u16) -> String {
-    format!("{}://{}:{}", scheme, format_url_host(host), port)
+    if is_default_port(scheme, port) {
+        format!("{}://{}", scheme, format_url_host(host))
+    } else {
+        format!("{}://{}:{}", scheme, format_url_host(host), port)
+    }
+}
+
+fn is_default_port(scheme: &str, port: u16) -> bool {
+    matches!((scheme, port), ("http", 80) | ("https", 443))
 }
 
 fn format_url_host(host: &str) -> String {
@@ -1738,6 +1814,50 @@ mod tests {
         assert_eq!(
             window.config.low_power_background_effect,
             Some(WindowBackgroundEffect::Maris)
+        );
+    }
+
+    #[test]
+    fn url_sets_production_url_and_bridge_origin() {
+        let window = CefWindow::new().url("https://raday.lantharos.com/dashboard");
+
+        assert_eq!(
+            window.entry_url().unwrap(),
+            "https://raday.lantharos.com/dashboard"
+        );
+        assert!(window.config.security.remote_content);
+        assert!(
+            window
+                .config
+                .security
+                .allowed_origins
+                .iter()
+                .any(|origin| origin == "https://raday.lantharos.com")
+        );
+    }
+
+    #[test]
+    fn dev_url_takes_precedence_over_production_url() {
+        let window = CefWindow::new()
+            .url("https://raday.lantharos.com")
+            .dev_url("http://localhost:5173");
+
+        assert_eq!(window.entry_url().unwrap(), "http://localhost:5173");
+        assert!(
+            window
+                .config
+                .security
+                .allowed_origins
+                .iter()
+                .any(|origin| origin == "https://raday.lantharos.com")
+        );
+        assert!(
+            window
+                .config
+                .security
+                .allowed_origins
+                .iter()
+                .any(|origin| origin == "http://localhost:5173")
         );
     }
 }

@@ -443,6 +443,14 @@ fn read_single_instance_activation(
     if let Some(cwd) = value.get("cwd").and_then(|value| value.as_str()) {
         activation = activation.working_directory(cwd);
     }
+    if let Some(token) = value
+        .get("activationToken")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+    {
+        activation = activation.activation_token(token);
+    }
     Some(activation)
 }
 
@@ -458,8 +466,17 @@ fn send_single_instance_activation(
         "policy": format!("{policy:?}"),
         "arguments": env::args().collect::<Vec<_>>(),
         "cwd": cwd,
+        "activationToken": startup_activation_token(),
     });
     stream.write_all(body.to_string().as_bytes())
+}
+
+fn startup_activation_token() -> Option<String> {
+    env::var("XDG_ACTIVATION_TOKEN")
+        .or_else(|_| env::var("DESKTOP_STARTUP_ID"))
+        .ok()
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
 }
 
 fn single_instance_socket_path(instance_id: Option<&str>) -> io::Result<PathBuf> {

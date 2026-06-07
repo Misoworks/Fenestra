@@ -26,7 +26,10 @@ use winit::{
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     keyboard::Key,
     platform::wayland::WindowAttributesWayland,
-    window::{ResizeDirection, Window as WinitWindow, WindowAttributes, WindowId, WindowLevel},
+    window::{
+        ActivationToken, ResizeDirection, UserAttentionType, Window as WinitWindow,
+        WindowAttributes, WindowId, WindowLevel,
+    },
 };
 
 use crate::{
@@ -221,6 +224,7 @@ struct OsrNativeHost {
     closing_deadline: Option<Instant>,
     activity_hibernation_blockers: BTreeSet<String>,
     presented: bool,
+    pending_activation_token: Option<ActivationToken>,
     started: Instant,
 }
 
@@ -250,7 +254,7 @@ enum LifecycleState {
 enum HostControl {
     Show,
     Hide,
-    Focus,
+    Focus(Option<String>),
     Visible(bool),
     ActivityBegin(HostActivity),
     ActivityEnd(HostActivity),
@@ -352,6 +356,7 @@ impl OsrNativeHost {
             closing_deadline: None,
             activity_hibernation_blockers: BTreeSet::new(),
             presented: false,
+            pending_activation_token: None,
             started: Instant::now(),
         }
     }
@@ -670,9 +675,8 @@ impl OsrNativeHost {
                     self.show_window("show");
                 }
                 OsrHostEvent::HostControl(HostControl::Hide) => self.hide_window("hide"),
-                OsrHostEvent::HostControl(HostControl::Focus) => {
-                    self.ensure_window(event_loop);
-                    self.focus_window("focus");
+                OsrHostEvent::HostControl(HostControl::Focus(token)) => {
+                    self.activate_window(event_loop, token);
                 }
                 OsrHostEvent::HostControl(HostControl::Visible(true)) => {
                     self.ensure_window(event_loop);
@@ -710,6 +714,7 @@ impl OsrNativeHost {
         if let Some(window) = &self.window {
             if self.presented {
                 window.set_visible(true);
+                window.set_minimized(false);
                 window.request_redraw();
             } else {
                 window.set_visible(false);
@@ -743,9 +748,7 @@ impl OsrNativeHost {
         self.focused = true;
         if let Some(window) = &self.window {
             if self.presented {
-                window.set_visible(true);
-                window.focus_window();
-                window.request_redraw();
+                present_window(window);
             } else {
                 window.set_visible(false);
             }
@@ -753,6 +756,17 @@ impl OsrNativeHost {
         self.send_control("focus\t1\n");
         self.resume(reason);
         self.send_resize();
+    }
+
+    fn activate_window(&mut self, event_loop: &dyn ActiveEventLoop, token: Option<String>) {
+        if let Some(token) = activation_token_value(token) {
+            self.pending_activation_token = Some(ActivationToken::from_raw(token));
+            if self.window.is_some() {
+                self.drop_presented_window();
+            }
+        }
+        self.ensure_window(event_loop);
+        self.focus_window("focus");
     }
 
     fn update_frame_texture(&mut self, frame: OsrFrame) -> bool {
@@ -912,8 +926,9 @@ impl OsrNativeHost {
         self.update_effect_regions();
         if self.config.visible {
             window.set_visible(true);
-            if self.config.active {
-                window.focus_window();
+            window.set_minimized(false);
+            if self.config.active || self.focused {
+                present_window(&window);
             }
         }
         if self.config.visible {
@@ -1114,7 +1129,8 @@ impl OsrNativeHost {
         if self.window.is_some() {
             return;
         }
-        let defer_visibility = self.config.visible && can_defer_window_visibility();
+        let activating = self.pending_activation_token.is_some();
+        let defer_visibility = self.config.visible && can_defer_window_visibility() && !activating;
         let mut attributes = WindowAttributes::default()
             .with_title(self.config.title.clone())
             .with_surface_size(LogicalSize::new(
@@ -1128,7 +1144,7 @@ impl OsrNativeHost {
             .with_resizable(self.config.resizable)
             .with_decorations(self.config.chrome.uses_native_decorations())
             .with_visible(self.config.visible && !defer_visibility)
-            .with_active(self.config.active && !defer_visibility)
+            .with_active((self.config.active || activating) && !defer_visibility)
             .with_window_level(if self.config.always_on_top {
                 WindowLevel::AlwaysOnTop
             } else {
@@ -1136,10 +1152,18 @@ impl OsrNativeHost {
             })
             .with_transparent(self.config.transparent)
             .with_blur(self.config.background_effect.requires_transparency());
+        let mut wayland_attributes = WindowAttributesWayland::default();
+        let mut has_wayland_attributes = false;
         if let Some(app_id) = &self.config.app_id {
-            attributes = attributes.with_platform_attributes(Box::new(
-                WindowAttributesWayland::default().with_name(app_id, app_id),
-            ));
+            wayland_attributes = wayland_attributes.with_name(app_id, app_id);
+            has_wayland_attributes = true;
+        }
+        if let Some(token) = self.pending_activation_token.take() {
+            wayland_attributes = wayland_attributes.with_activation_token(token);
+            has_wayland_attributes = true;
+        }
+        if has_wayland_attributes {
+            attributes = attributes.with_platform_attributes(Box::new(wayland_attributes));
         }
         if let Some(position) =
             crate::centered_window_position(event_loop, self.config.width, self.config.height)
@@ -1178,16 +1202,30 @@ impl OsrNativeHost {
     }
 
     fn drop_hidden_window(&mut self) {
+        self.drop_presented_window();
+        self.main_frame = None;
+        self.popup_frame = None;
+        self.main_buffer.release();
+        self.popup_buffer.release();
+    }
+
+    fn drop_presented_window(&mut self) {
+        if let Some(window) = &self.window {
+            let scale = window.scale_factor().max(1.0);
+            self.config.width = (f64::from(self.surface_size.width) / scale)
+                .round()
+                .max(f64::from(self.config.min_width)) as u32;
+            self.config.height = (f64::from(self.surface_size.height) / scale)
+                .round()
+                .max(f64::from(self.config.min_height)) as u32;
+        }
         self.window = None;
         self.renderer = None;
         self.effect = None;
         self.presented = false;
         self.hovered_control = None;
+        self.pressed_control = None;
         self.cursor = CursorIcon::Default;
-        self.main_frame = None;
-        self.popup_frame = None;
-        self.main_buffer.release();
-        self.popup_buffer.release();
     }
 
     fn upload_cached_textures(&mut self) {
@@ -1706,7 +1744,9 @@ fn host_control_from_parts(command: &str, value: &str) -> Option<HostControl> {
         "visible" => bool_control_value(value).map(HostControl::Visible),
         "show" => Some(HostControl::Show),
         "hide" => Some(HostControl::Hide),
-        "focus" => Some(HostControl::Focus),
+        "focus" => Some(HostControl::Focus(activation_token_value(Some(
+            value.to_string(),
+        )))),
         "activity.begin" => activity_control_value(value).map(HostControl::ActivityBegin),
         "activity.end" => activity_control_value(value).map(HostControl::ActivityEnd),
         _ => None,
@@ -1719,6 +1759,13 @@ fn bool_control_value(value: &str) -> Option<bool> {
         "0" | "false" | "no" | "hide" | "hidden" => Some(false),
         _ => None,
     }
+}
+
+fn activation_token_value(token: Option<String>) -> Option<String> {
+    token
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
+        .filter(|token| bool_control_value(token).is_none())
 }
 
 fn activity_control_value(value: &str) -> Option<HostActivity> {
@@ -2012,6 +2059,14 @@ fn activate_control(
         TitlebarControl::Maximize => window.set_maximized(!window.is_maximized()),
         TitlebarControl::Close => host.begin_close(event_loop),
     }
+}
+
+fn present_window(window: &Arc<dyn WinitWindow>) {
+    window.set_visible(true);
+    window.set_minimized(false);
+    window.request_user_attention(Some(UserAttentionType::Informational));
+    window.focus_window();
+    window.request_redraw();
 }
 
 fn cef_mouse_button(button: Option<MouseButton>) -> Option<&'static str> {

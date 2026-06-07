@@ -26,6 +26,8 @@ struct WebConfig {
     dist: Option<PathBuf>,
     entry: Option<PathBuf>,
     build: Option<String>,
+    url: Option<String>,
+    dev_url: Option<String>,
 }
 
 pub fn metadata(source: &Path) -> SourceMetadata {
@@ -122,10 +124,11 @@ fn web_config(source: &Path) -> Option<WebConfig> {
     read_web_config(source, &source.join("Fenestra.toml"), &mut config);
     read_web_config(source, &source.join("Stuk.toml"), &mut config);
 
-    if config.root.is_none() {
+    let has_remote_url = config.url.is_some() || config.dev_url.is_some();
+    if config.root.is_none() && !has_remote_url {
         config.root = detect_package_root(source);
     }
-    if config.entry.is_none() {
+    if config.entry.is_none() && !has_remote_url {
         config.entry = default_web_entry(source);
     }
     let has_web = config.root.is_some() || config.dist.is_some() || config.entry.is_some();
@@ -189,6 +192,11 @@ fn read_web_config(source: &Path, path: &Path, config: &mut WebConfig) {
             .take()
             .or_else(|| string_value(web, "entry").map(|path| source.join(path)));
         config.build = config.build.take().or_else(|| string_value(web, "build"));
+        config.url = config.url.take().or_else(|| string_value(web, "url"));
+        config.dev_url = config
+            .dev_url
+            .take()
+            .or_else(|| string_value(web, "dev_url"));
     }
     if let Some(webview) = value.get("webview").and_then(toml::Value::as_table) {
         config.entry = config

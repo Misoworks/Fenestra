@@ -84,6 +84,16 @@ CefWindow::new()
 `dev_server(...)` waits for loopback variants including `localhost`, `127.0.0.1`, and `::1`, so
 normal Vite/Bun workflows do not need host workarounds.
 
+`dev_url(...)` is a development override. If both `url(...)` and `dev_url(...)` are set, Fenestra
+loads the dev URL while developing and keeps the production URL for packaged/runtime config:
+
+```rust
+CefWindow::new()
+    .url("https://raday.lantharos.com")
+    .dev_url("http://localhost:5173")
+    .dev_command("bun run dev -- --host localhost --port 5173 --strictPort");
+```
+
 Use source installs for local desktop entries during development:
 
 ```sh
@@ -123,6 +133,59 @@ entry = "ui/dist/index.html"
 build = "bun run build"
 ```
 
+## Hosted Web Apps
+
+Use `url(...)` for an existing hosted app. This is the normal path for turning a deployed web
+product into a desktop app without copying the web build into the desktop package:
+
+```rust
+let process = CefWindow::new()
+    .app_id("com.lantharos.raday")
+    .title("Raday")
+    .url("https://raday.lantharos.com")
+    .dev_url("http://localhost:5173")
+    .allowed_origin("https://preview.raday.lantharos.com")
+    .fenestra_chrome()
+    .launch_or_install()?;
+```
+
+`url(...)`, `remote_url(...)`, and `bundled_url(...)` are aliases for the production web entry.
+Fenestra automatically allows that URL's origin for bridge traffic. `allowed_origin(...)` adds any
+extra origins that are allowed to invoke the bridge.
+
+The web code should be able to run in a normal browser with no desktop APIs:
+
+```ts
+const fenestra = window.fenestra;
+
+export async function invokeDesktop<T>(command: string, payload?: unknown): Promise<T | null> {
+  if (!fenestra?.bridge) {
+    return null;
+  }
+  return fenestra.bridge.invoke(command, payload) as Promise<T>;
+}
+```
+
+For hosted apps, treat the bridge as a privileged desktop-only enhancement. The public website should
+continue to work when `window.fenestra` is absent, and native-only actions should stay behind Rust
+bridge commands with explicit command names and allowed origins.
+
+Remote-only bundle config:
+
+```toml
+[web]
+url = "https://raday.lantharos.com"
+dev_url = "http://localhost:5173"
+allowed_origins = [
+  "https://raday.lantharos.com",
+  "https://preview.raday.lantharos.com",
+  "http://localhost:5173",
+]
+```
+
+When `root`, `dist`, and `entry` are omitted, `fenestra bundle` does not build or copy local web
+assets. Add those fields only when the package should include a local web build.
+
 ## Bridge
 
 Register native commands explicitly:
@@ -147,8 +210,24 @@ Invoke from web:
 const notes = await window.fenestra.bridge.invoke("notes.list");
 ```
 
-Use `BridgeCommandDescriptor` for permissions, target gating, and allowed origins. Keep privileged
-work in Rust and expose small command surfaces to the web page.
+Use `BridgeCommandDescriptor` for permissions, target gating, and per-command allowed origins:
+
+```rust
+CefWindow::new()
+    .url("https://raday.lantharos.com")
+    .security(WebViewSecurity::default().allow_origin("https://raday.lantharos.com"))
+    .bridge_descriptor_handler(
+        BridgeCommandDescriptor::new("files.pick")
+            .target("desktop")
+            .permission("files")
+            .allowed_origin("https://raday.lantharos.com"),
+        pick_file,
+    );
+```
+
+Keep privileged work in Rust and expose small command surfaces to the web page. If a command needs
+access to the filesystem, credentials, notifications, native messaging, or global shortcuts, it
+should be a Rust command with validation rather than browser-side logic.
 
 ## Activity Leases
 
@@ -234,6 +313,34 @@ CefWindow::new()
 
 Events are forwarded to web as `fenestra:*` events and can also be polled from Rust with
 `take_desktop_events()`.
+
+## Runtime And Bundling
+
+Fenestra checks runtime sources in this order:
+
+| Source | Use |
+| --- | --- |
+| System runtime | Already-installed compatible CEF runtime |
+| User-local runtime | Shared runtime under `~/.local/share/fenestra/runtimes/cef/` |
+| Bundled runtime | App-provided runtime for offline/self-contained packages |
+| Installer | User-local runtime download when no compatible runtime is present |
+
+The runtime is shared, but app cache profiles are isolated per app/window so multiple desktop apps
+can run at the same time without Chromium process-singleton collisions.
+
+Bundling can stage native package trees from one host:
+
+```sh
+fenestra bundle . --target portable
+fenestra bundle . --target deb --release
+fenestra bundle . --target rpm --release
+fenestra bundle . --target appimage --release
+fenestra bundle . --target dmg --binary target/aarch64-apple-darwin/release/raday
+fenestra bundle . --target msi --binary target/x86_64-pc-windows-msvc/release/raday.exe
+```
+
+Native binaries, signing, notarization, and installer signing still need the relevant platform
+toolchain and credentials. `--binary` packages a binary built by CI or a cross-compile step.
 
 ## Platform Notes
 
