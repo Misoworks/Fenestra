@@ -123,6 +123,7 @@ pub struct CefConfig {
     pub frameless: bool,
     pub chrome: CefWindowChrome,
     pub background_effect: WindowBackgroundEffect,
+    pub low_power_background_effect: Option<WindowBackgroundEffect>,
     pub regions: WindowRegions,
     pub shell_surface: Option<ShellSurfaceOptions>,
     pub drag_regions: Vec<WindowRegionRect>,
@@ -156,6 +157,7 @@ impl Default for CefConfig {
             frameless: false,
             chrome: CefWindowChrome::System,
             background_effect: WindowBackgroundEffect::None,
+            low_power_background_effect: None,
             regions: WindowRegions::default(),
             shell_surface: None,
             drag_regions: Vec::new(),
@@ -168,6 +170,31 @@ impl Default for CefConfig {
             security: WebViewSecurity::default(),
         }
     }
+}
+
+impl CefConfig {
+    pub fn effective_background_effect(&self) -> WindowBackgroundEffect {
+        if let Some(effect) = self.low_power_background_effect
+            && low_power_glass_requested()
+        {
+            return effect;
+        }
+        self.background_effect
+    }
+}
+
+fn low_power_glass_requested() -> bool {
+    env_flag("FENESTRA_LOW_POWER_GLASS")
+        || env_flag("STACCATO_LOW_POWER_MODE")
+        || std::env::var("STACCATO_POWER_PROFILE")
+            .map(|value| matches!(value.as_str(), "battery" | "low-power" | "power-saver"))
+            .unwrap_or(false)
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -638,6 +665,7 @@ impl CefWindow {
         self.config.transparent = transparent;
         if !transparent {
             self.config.background_effect = WindowBackgroundEffect::None;
+            self.config.low_power_background_effect = None;
             self.config.regions.blur = None;
         }
         self
@@ -646,6 +674,7 @@ impl CefWindow {
     pub fn opaque(mut self) -> Self {
         self.config.transparent = false;
         self.config.background_effect = WindowBackgroundEffect::None;
+        self.config.low_power_background_effect = None;
         self.config.regions.blur = None;
         self
     }
@@ -690,10 +719,27 @@ impl CefWindow {
         self
     }
 
-    pub fn glass(mut self) -> Self {
+    pub fn glass(self) -> Self {
+        self.glass_effect(WindowBackgroundEffect::Luca)
+    }
+
+    pub fn glass_effect(mut self, effect: WindowBackgroundEffect) -> Self {
         self.config.transparent = true;
-        self.config.background_effect = WindowBackgroundEffect::Blur;
+        self.config.background_effect = effect;
         self
+    }
+
+    pub fn glass_material(self, effect: WindowBackgroundEffect) -> Self {
+        self.glass_effect(effect)
+    }
+
+    pub fn glass_low_power_effect(mut self, effect: WindowBackgroundEffect) -> Self {
+        self.config.low_power_background_effect = Some(effect);
+        self
+    }
+
+    pub fn glass_low_power_material(self, effect: WindowBackgroundEffect) -> Self {
+        self.glass_low_power_effect(effect)
     }
 
     pub fn background_effect(mut self, effect: WindowBackgroundEffect) -> Self {
@@ -1086,7 +1132,7 @@ impl CefWindow {
             self.config.chrome != CefWindowChrome::System
                 || self.config.frameless
                 || self.config.transparent
-                || self.config.background_effect != WindowBackgroundEffect::None
+                || self.config.effective_background_effect() != WindowBackgroundEffect::None
         }
 
         #[cfg(not(target_os = "linux"))]
@@ -1629,5 +1675,30 @@ mod tests {
         assert_eq!(window.config.lifecycle.background_frame_rate, 1);
         assert!(window.config.lifecycle.suspend_on_blur);
         assert_eq!(window.config.lifecycle.hibernate_after, None);
+    }
+
+    #[test]
+    fn glass_defaults_to_luca_material() {
+        let window = CefWindow::new().glass();
+        assert!(window.config.transparent);
+        assert_eq!(
+            window.config.background_effect,
+            WindowBackgroundEffect::Luca
+        );
+    }
+
+    #[test]
+    fn glass_material_tracks_low_power_fallback() {
+        let window = CefWindow::new()
+            .glass_material(WindowBackgroundEffect::Niko)
+            .glass_low_power_material(WindowBackgroundEffect::Maris);
+        assert_eq!(
+            window.config.background_effect,
+            WindowBackgroundEffect::Niko
+        );
+        assert_eq!(
+            window.config.low_power_background_effect,
+            Some(WindowBackgroundEffect::Maris)
+        );
     }
 }

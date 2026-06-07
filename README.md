@@ -20,12 +20,14 @@ CefWindow::new().system_chrome()
 CefWindow::new().fenestra_chrome()
 CefWindow::new().frameless()
 CefWindow::new().frameless().glass()
+CefWindow::new().frameless().glass_material(WindowBackgroundEffect::Niko)
 ```
 
 - `system_chrome()` uses normal OS/window-manager decorations.
 - `fenestra_chrome()` uses a Fenestra-owned native OSR host with a built-in titlebar.
 - `frameless()` creates a true undecorated OSR window; apps provide any titlebar UI and declare drag/control regions.
-- `frameless().glass()` uses the same app-drawn OSR path with transparent composition and blur regions.
+- `frameless().glass()` uses the same app-drawn OSR path with transparent composition and Luca material.
+- `glass_material(...)` requests a specific semantic material such as Luca, Niko, or Maris. Apps can call `glass_low_power_material(WindowBackgroundEffect::Maris)` to opt into a Maris fallback when the session is in low-power mode.
 
 Linux is Wayland-first. Frameless, transparent, and glass windows use the OSR native-host path by
 default; the direct CEF top-level path remains available for opaque system-decorated compatibility

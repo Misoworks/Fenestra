@@ -117,6 +117,7 @@ pub struct WebViewConfig {
     pub frameless: bool,
     pub transparent: bool,
     pub background_effect: WindowBackgroundEffect,
+    pub low_power_background_effect: Option<WindowBackgroundEffect>,
     pub regions: WindowRegions,
     pub shell_surface: Option<ShellSurfaceOptions>,
     pub drag_regions: Vec<WindowRegionRect>,
@@ -152,6 +153,7 @@ impl Default for WebViewConfig {
             frameless: false,
             transparent: true,
             background_effect: WindowBackgroundEffect::None,
+            low_power_background_effect: None,
             regions: WindowRegions::default(),
             shell_surface: None,
             drag_regions: Vec::new(),
@@ -163,6 +165,40 @@ impl Default for WebViewConfig {
             bridge: BridgeRegistry::default(),
             desktop_services: DesktopServiceConfig::default(),
         }
+    }
+}
+
+impl WebViewConfig {
+    pub fn effective_background_effect(&self) -> WindowBackgroundEffect {
+        if let Some(effect) = self.low_power_background_effect
+            && low_power_glass_requested()
+        {
+            return effect;
+        }
+        self.background_effect
+    }
+}
+
+fn low_power_glass_requested() -> bool {
+    env_flag("FENESTRA_LOW_POWER_GLASS")
+        || env_flag("STACCATO_LOW_POWER_MODE")
+        || std::env::var("STACCATO_POWER_PROFILE")
+            .map(|value| matches!(value.as_str(), "battery" | "low-power" | "power-saver"))
+            .unwrap_or(false)
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+fn background_effect_for_glass_material(material: &Material) -> WindowBackgroundEffect {
+    match material {
+        Material::Luca => WindowBackgroundEffect::Luca,
+        Material::Niko => WindowBackgroundEffect::Niko,
+        Material::Maris => WindowBackgroundEffect::Maris,
+        _ => WindowBackgroundEffect::Blur,
     }
 }
 
@@ -550,6 +586,7 @@ impl WebViewWindow {
         self.config.transparent = transparent;
         if !transparent {
             self.config.background_effect = WindowBackgroundEffect::None;
+            self.config.low_power_background_effect = None;
             self.config.regions.blur = None;
         }
         self
@@ -558,14 +595,25 @@ impl WebViewWindow {
     pub fn opaque(mut self) -> Self {
         self.config.transparent = false;
         self.config.background_effect = WindowBackgroundEffect::None;
+        self.config.low_power_background_effect = None;
         self.config.regions.blur = None;
         self
     }
 
-    pub fn glass(mut self) -> Self {
-        self.config.material = Material::Window;
+    pub fn glass(self) -> Self {
+        self.glass_material(Material::Luca)
+    }
+
+    pub fn glass_material(mut self, material: Material) -> Self {
+        self.config.background_effect = background_effect_for_glass_material(&material);
+        self.config.material = material;
         self.config.transparent = true;
-        self.config.background_effect = WindowBackgroundEffect::Blur;
+        self
+    }
+
+    pub fn glass_low_power_material(mut self, material: Material) -> Self {
+        self.config.low_power_background_effect =
+            Some(background_effect_for_glass_material(&material));
         self
     }
 
@@ -874,6 +922,7 @@ impl WebViewWindow {
             frameless: config.frameless || !cef_chrome.uses_native_decorations(),
             chrome: cef_chrome,
             background_effect: config.background_effect,
+            low_power_background_effect: config.low_power_background_effect,
             regions: config.regions,
             shell_surface: config.shell_surface,
             drag_regions: config.drag_regions,
@@ -1210,7 +1259,7 @@ fn launch_native_host_process(
             "active": config.active,
             "always_on_top": config.always_on_top,
             "transparent": config.transparent,
-            "background_effect": config.background_effect.as_str(),
+            "background_effect": config.effective_background_effect().as_str(),
             "chrome": config.chrome.as_str(),
             "bridge_commands": config.bridge.commands(),
         });
@@ -1309,7 +1358,7 @@ fn launch_wayland_cef_host_process(
         .arg(format!("--fenestra-height={}", 600))
         .arg(format!(
             "--fenestra-background-effect={}",
-            config.background_effect.as_str()
+            config.effective_background_effect().as_str()
         ))
         .arg(format!(
             "--fenestra-bridge-commands={}",
@@ -2989,6 +3038,24 @@ mod tests {
         );
         assert!(window.config.transparent);
         assert_eq!(window.config.runtime.engine, RuntimeEngine::Cef);
+    }
+
+    #[test]
+    fn webview_glass_material_selects_matching_effect() {
+        let window = WebViewWindow::new()
+            .glass_material(Material::Niko)
+            .glass_low_power_material(Material::Maris);
+
+        assert!(window.config.transparent);
+        assert_eq!(window.config.material, Material::Niko);
+        assert_eq!(
+            window.config.background_effect,
+            WindowBackgroundEffect::Niko
+        );
+        assert_eq!(
+            window.config.low_power_background_effect,
+            Some(WindowBackgroundEffect::Maris)
+        );
     }
 
     #[test]

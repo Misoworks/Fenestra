@@ -53,7 +53,7 @@ pub(crate) fn launch_process(
             "active": config.active,
             "always_on_top": config.always_on_top,
             "transparent": config.transparent,
-            "background_effect": config.background_effect.as_str(),
+            "background_effect": config.effective_background_effect().as_str(),
             "chrome": config.chrome.as_str(),
             "bridge_commands": config.bridge.commands(),
             "regions": crate::osr_protocol::regions_to_json(&config.regions),
