@@ -175,6 +175,7 @@ struct OsrNativeHost {
     hovered_control: Option<TitlebarControl>,
     pressed_control: Option<TitlebarControl>,
     cursor: CursorIcon,
+    native_cursor_override: bool,
     modifiers: winit::keyboard::ModifiersState,
     mouse: MouseButtons,
     last_click: Option<ClickMemory>,
@@ -258,6 +259,7 @@ impl OsrNativeHost {
             hovered_control: None,
             pressed_control: None,
             cursor: CursorIcon::Default,
+            native_cursor_override: false,
             modifiers: Default::default(),
             mouse: MouseButtons::default(),
             last_click: None,
@@ -401,7 +403,7 @@ impl OsrNativeHost {
                     self.popup_frame = None;
                 }
                 OsrHostEvent::Message(OsrMessage::Cursor(cursor)) => {
-                    self.set_cursor(cursor_for_cef(&cursor));
+                    self.set_content_cursor(cursor_for_cef(&cursor));
                 }
                 OsrHostEvent::Message(OsrMessage::CloseRequested) => {
                     self.force_close(event_loop);
@@ -641,6 +643,24 @@ impl OsrNativeHost {
         }
     }
 
+    fn set_native_cursor(&mut self, cursor: CursorIcon) {
+        self.native_cursor_override = true;
+        self.set_cursor(cursor);
+    }
+
+    fn set_content_cursor(&mut self, cursor: CursorIcon) {
+        self.native_cursor_override = false;
+        self.set_cursor(cursor);
+    }
+
+    fn clear_native_cursor(&mut self) {
+        if !self.native_cursor_override {
+            return;
+        }
+        self.native_cursor_override = false;
+        self.set_cursor(CursorIcon::Default);
+    }
+
     fn content_position(&self, x: f32, y: f32) -> Option<(f32, f32)> {
         let titlebar_height = self.titlebar_height();
         (y >= titlebar_height).then_some((x.max(0.0), (y - titlebar_height).max(0.0)))
@@ -767,16 +787,17 @@ impl ApplicationHandler for OsrNativeHost {
                     self.logical_width(),
                     self.logical_height(),
                 ) {
-                    self.set_cursor(CursorIcon::from(direction));
+                    self.set_native_cursor(CursorIcon::from(direction));
                 } else if self.hovered_control.is_some() {
-                    self.set_cursor(CursorIcon::Pointer);
+                    self.set_native_cursor(CursorIcon::Pointer);
                 } else if self
                     .content_position(self.cursor_x, self.cursor_y)
                     .is_some()
                 {
+                    self.clear_native_cursor();
                     self.forward_mouse_move(false);
                 } else {
-                    self.set_cursor(CursorIcon::Default);
+                    self.set_native_cursor(CursorIcon::Default);
                 }
                 window.request_redraw();
             }
@@ -790,7 +811,7 @@ impl ApplicationHandler for OsrNativeHost {
                 }
                 self.hovered_control = None;
                 self.forward_mouse_move(true);
-                self.set_cursor(CursorIcon::Default);
+                self.set_native_cursor(CursorIcon::Default);
                 window.request_redraw();
             }
             WindowEvent::PointerButton {
