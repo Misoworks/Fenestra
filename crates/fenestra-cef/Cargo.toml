@@ -7,11 +7,8 @@ license.workspace = true
 description = "CEF backend for Fenestra webview windows"
 
 [dependencies]
-ashpd.workspace = true
 fenestra-runtime.workspace = true
 futures-util.workspace = true
-ksni.workspace = true
-layershellev.workspace = true
 libc.workspace = true
 pollster.workspace = true
 raw-window-handle.workspace = true
@@ -22,5 +19,10 @@ stuk-render.workspace = true
 stuk-style.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-wayland-client.workspace = true
 winit.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd.workspace = true
+ksni.workspace = true
+layershellev.workspace = true
+wayland-client.workspace = true

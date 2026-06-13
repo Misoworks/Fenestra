@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
 use fenestra_cef::{
-    BridgeCommandDescriptor, BridgeResponse, CefLifecyclePolicy, CefWindow, CefWindowControlAction,
-    RuntimeConfig, RuntimeMode, WindowRegion, WindowRegionRect, run_fenestra_host_from_args,
-    user_runtime_path,
+    BridgeCommandDescriptor, BridgeResponse, FenestraLifecyclePolicy, FenestraWindow,
+    FenestraWindowControlAction, RuntimeConfig, RuntimeMode, WindowRegion, WindowRegionRect,
+    run_fenestra_host_from_args, user_runtime_path,
 };
 
 const APP_TITLEBAR_HEIGHT: i32 = 38;
@@ -25,12 +25,12 @@ fn main() {
     let mode = ExampleChromeMode::from_args(&args);
     let entry = mode.entry(&manifest_dir);
     let mut window = mode.apply(
-        CefWindow::new()
+        FenestraWindow::new()
             .title("Fenestra Notes")
             .size(900, 640)
             .entry(entry)
             .runtime(runtime.clone())
-            .lifecycle_policy(CefLifecyclePolicy::browser_tab())
+            .lifecycle_policy(FenestraLifecyclePolicy::browser_tab())
             .bridge_descriptor_handler(
                 BridgeCommandDescriptor::new("notes.create").target("desktop"),
                 |command| {
@@ -114,7 +114,7 @@ impl ExampleChromeMode {
         matches!(self, Self::Frameless | Self::Glass)
     }
 
-    fn apply(self, window: CefWindow) -> CefWindow {
+    fn apply(self, window: FenestraWindow) -> FenestraWindow {
         match self {
             Self::System => window.system_chrome().opaque(),
             Self::FenestraChrome => window.fenestra_chrome().opaque(),
@@ -143,19 +143,19 @@ impl ExampleChromeMode {
     }
 }
 
-fn app_chrome(window: CefWindow) -> CefWindow {
+fn app_chrome(window: FenestraWindow) -> FenestraWindow {
     window
         .drag_region(WindowRegionRect::new(0, 0, i32::MAX, APP_TITLEBAR_HEIGHT))
         .control_region(
-            CefWindowControlAction::Minimize,
+            FenestraWindowControlAction::Minimize,
             WindowRegionRect::new(-100, 7, 24, 24),
         )
         .control_region(
-            CefWindowControlAction::Maximize,
+            FenestraWindowControlAction::Maximize,
             WindowRegionRect::new(-68, 7, 24, 24),
         )
         .control_region(
-            CefWindowControlAction::Close,
+            FenestraWindowControlAction::Close,
             WindowRegionRect::new(-36, 7, 24, 24),
         )
 }

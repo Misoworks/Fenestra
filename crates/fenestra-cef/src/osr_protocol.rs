@@ -14,7 +14,7 @@ use stuk_platform_shell::{
     ShellSurfaceOptions,
 };
 
-use crate::{CefLifecyclePolicy, CefWindowControlAction, CefWindowControlRegion};
+use crate::{FenestraLifecyclePolicy, FenestraWindowControlAction, FenestraWindowControlRegion};
 
 use std::time::Duration;
 
@@ -394,7 +394,7 @@ pub(crate) fn rects_from_json(value: Option<&Value>) -> Vec<WindowRegionRect> {
         .unwrap_or_default()
 }
 
-pub(crate) fn control_regions_to_json(regions: &[CefWindowControlRegion]) -> Value {
+pub(crate) fn control_regions_to_json(regions: &[FenestraWindowControlRegion]) -> Value {
     Value::Array(
         regions
             .iter()
@@ -408,15 +408,15 @@ pub(crate) fn control_regions_to_json(regions: &[CefWindowControlRegion]) -> Val
     )
 }
 
-pub(crate) fn control_regions_from_json(value: Option<&Value>) -> Vec<CefWindowControlRegion> {
+pub(crate) fn control_regions_from_json(value: Option<&Value>) -> Vec<FenestraWindowControlRegion> {
     value
         .and_then(Value::as_array)
         .map(|regions| {
             regions
                 .iter()
                 .filter_map(|region| {
-                    Some(CefWindowControlRegion::new(
-                        CefWindowControlAction::parse(region.get("action")?.as_str()?)?,
+                    Some(FenestraWindowControlRegion::new(
+                        FenestraWindowControlAction::parse(region.get("action")?.as_str()?)?,
                         rect_from_json(region.get("rect")?)?,
                     ))
                 })
@@ -425,7 +425,7 @@ pub(crate) fn control_regions_from_json(value: Option<&Value>) -> Vec<CefWindowC
         .unwrap_or_default()
 }
 
-pub(crate) fn lifecycle_to_json(lifecycle: &CefLifecyclePolicy) -> Value {
+pub(crate) fn lifecycle_to_json(lifecycle: &FenestraLifecyclePolicy) -> Value {
     serde_json::json!({
         "active_frame_rate": lifecycle.active_frame_rate.max(1),
         "background_frame_rate": lifecycle.background_frame_rate.max(1),
@@ -437,11 +437,11 @@ pub(crate) fn lifecycle_to_json(lifecycle: &CefLifecyclePolicy) -> Value {
     })
 }
 
-pub(crate) fn lifecycle_from_json(value: Option<&Value>) -> CefLifecyclePolicy {
+pub(crate) fn lifecycle_from_json(value: Option<&Value>) -> FenestraLifecyclePolicy {
     let Some(value) = value else {
-        return CefLifecyclePolicy::default();
+        return FenestraLifecyclePolicy::default();
     };
-    let mut lifecycle = CefLifecyclePolicy::default();
+    let mut lifecycle = FenestraLifecyclePolicy::default();
     lifecycle.active_frame_rate = value
         .get("active_frame_rate")
         .and_then(Value::as_u64)

@@ -45,7 +45,7 @@ pub(crate) struct ActivityRegistry {
     inner: Arc<Mutex<ActivityState>>,
 }
 
-pub struct CefActivityLease {
+pub struct FenestraActivityLease {
     registry: ActivityRegistry,
     emitter: Option<crate::BridgeEventEmitter>,
     record: Option<ActivityRecord>,
@@ -110,12 +110,12 @@ impl ActivityRegistry {
         &self,
         options: ActivityOptions,
         emitter: Option<crate::BridgeEventEmitter>,
-    ) -> CefActivityLease {
+    ) -> FenestraActivityLease {
         let record = self.begin(options);
         if let Some(emitter) = &emitter {
             let _ = emitter.emit_activity_update(&ActivityHostUpdate::Begin(record.clone()));
         }
-        CefActivityLease {
+        FenestraActivityLease {
             registry: self.clone(),
             emitter,
             record: Some(record),
@@ -178,7 +178,7 @@ impl ActivityRegistry {
     }
 }
 
-impl CefActivityLease {
+impl FenestraActivityLease {
     pub fn id(&self) -> Option<&str> {
         self.record.as_ref().map(|record| record.id.as_str())
     }
@@ -203,7 +203,7 @@ impl CefActivityLease {
     }
 }
 
-impl Drop for CefActivityLease {
+impl Drop for FenestraActivityLease {
     fn drop(&mut self) {
         self.end_inner();
     }

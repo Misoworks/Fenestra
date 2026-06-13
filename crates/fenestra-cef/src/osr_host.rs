@@ -33,7 +33,7 @@ use winit::{
 };
 
 use crate::{
-    CefLifecyclePolicy, CefWindowChrome, CefWindowControlRegion, osr,
+    FenestraLifecyclePolicy, FenestraWindowChrome, FenestraWindowControlRegion, osr,
     osr_frame_buffer::FrameBuffer,
     osr_layer_host,
     osr_protocol::{
@@ -91,13 +91,13 @@ pub(crate) struct OsrHostConfig {
     pub transparent: bool,
     pub shell_surface: Option<ShellSurfaceOptions>,
     pub background_effect: WindowBackgroundEffect,
-    pub chrome: CefWindowChrome,
+    pub chrome: FenestraWindowChrome,
     pub bridge_commands: Vec<String>,
     pub regions: WindowRegions,
     pub drag_regions: Vec<WindowRegionRect>,
     pub drag_exclusion_regions: Vec<WindowRegionRect>,
-    pub control_regions: Vec<CefWindowControlRegion>,
-    pub lifecycle: CefLifecyclePolicy,
+    pub control_regions: Vec<FenestraWindowControlRegion>,
+    pub lifecycle: FenestraLifecyclePolicy,
 }
 
 impl OsrHostConfig {
@@ -170,8 +170,8 @@ impl OsrHostConfig {
             chrome: value
                 .get("chrome")
                 .and_then(serde_json::Value::as_str)
-                .and_then(CefWindowChrome::parse)
-                .unwrap_or(CefWindowChrome::Frameless),
+                .and_then(FenestraWindowChrome::parse)
+                .unwrap_or(FenestraWindowChrome::Frameless),
             bridge_commands: value
                 .get("bridge_commands")
                 .and_then(serde_json::Value::as_array)
@@ -1837,8 +1837,8 @@ fn popup_local_frame(frame: &OsrFrame) -> OsrFrame {
     }
 }
 
-fn uses_fenestra_chrome(chrome: CefWindowChrome) -> bool {
-    matches!(chrome, CefWindowChrome::Fenestra)
+fn uses_fenestra_chrome(chrome: FenestraWindowChrome) -> bool {
+    matches!(chrome, FenestraWindowChrome::Fenestra)
 }
 
 fn trace_host(config: &OsrHostConfig, stage: impl AsRef<str>) {
@@ -1863,25 +1863,25 @@ fn can_defer_window_visibility() -> bool {
     true
 }
 
-fn platform_chrome(chrome: CefWindowChrome) -> PlatformWindowChrome {
+fn platform_chrome(chrome: FenestraWindowChrome) -> PlatformWindowChrome {
     match chrome {
-        CefWindowChrome::System => PlatformWindowChrome::System,
-        CefWindowChrome::Fenestra => PlatformWindowChrome::Stuk,
-        CefWindowChrome::Frameless | CefWindowChrome::None => PlatformWindowChrome::None,
+        FenestraWindowChrome::System => PlatformWindowChrome::System,
+        FenestraWindowChrome::Fenestra => PlatformWindowChrome::Stuk,
+        FenestraWindowChrome::Frameless | FenestraWindowChrome::None => PlatformWindowChrome::None,
     }
 }
 
 fn configured_control_at(
-    controls: &[CefWindowControlRegion],
+    controls: &[FenestraWindowControlRegion],
     width: f32,
     x: f32,
     y: f32,
 ) -> Option<TitlebarControl> {
     controls.iter().find_map(|region| {
         rect_region_contains(&region.rect, width, x, y).then(|| match region.action {
-            crate::CefWindowControlAction::Minimize => TitlebarControl::Minimize,
-            crate::CefWindowControlAction::Maximize => TitlebarControl::Maximize,
-            crate::CefWindowControlAction::Close => TitlebarControl::Close,
+            crate::FenestraWindowControlAction::Minimize => TitlebarControl::Minimize,
+            crate::FenestraWindowControlAction::Maximize => TitlebarControl::Maximize,
+            crate::FenestraWindowControlAction::Close => TitlebarControl::Close,
         })
     })
 }

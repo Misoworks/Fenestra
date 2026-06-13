@@ -80,8 +80,8 @@ fn main_rs() -> &'static str {
     r#"use std::path::PathBuf;
 
 use fenestra_cef::{
-    BridgeCommandDescriptor, BridgeResponse, CefWindow, CefWindowControlAction, RuntimeConfig,
-    RuntimeMode, WindowRegion, WindowRegionRect, run_fenestra_host_from_args,
+    BridgeCommandDescriptor, BridgeResponse, FenestraWindow, FenestraWindowControlAction,
+    RuntimeConfig, RuntimeMode, WindowRegion, WindowRegionRect, run_fenestra_host_from_args,
 };
 
 const APP_TITLEBAR_HEIGHT: i32 = 38;
@@ -101,7 +101,7 @@ fn main() {
         ..RuntimeConfig::default()
     };
 
-    let window = CefWindow::new()
+    let window = FenestraWindow::new()
         .title("Notes")
         .size(900, 640)
         .entry(format!(
@@ -122,15 +122,15 @@ fn main() {
         .input_region(WindowRegion::adaptive_rounded_rect(14))
         .drag_region(WindowRegionRect::new(0, 0, i32::MAX, APP_TITLEBAR_HEIGHT))
         .control_region(
-            CefWindowControlAction::Minimize,
+            FenestraWindowControlAction::Minimize,
             WindowRegionRect::new(-100, 7, 24, 24),
         )
         .control_region(
-            CefWindowControlAction::Maximize,
+            FenestraWindowControlAction::Maximize,
             WindowRegionRect::new(-68, 7, 24, 24),
         )
         .control_region(
-            CefWindowControlAction::Close,
+            FenestraWindowControlAction::Close,
             WindowRegionRect::new(-36, 7, 24, 24),
         )
         .runtime(runtime)

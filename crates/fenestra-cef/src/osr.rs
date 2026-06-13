@@ -5,7 +5,8 @@ use std::{
 };
 
 use crate::{
-    BridgeHandlers, BridgeRuntime, CefConfig, CefError, CefProcess, CefResult, ld_library_path,
+    BridgeHandlers, BridgeRuntime, FenestraError, FenestraProcess, FenestraResult,
+    FenestraWindowConfig, ld_library_path,
     metrics::LaunchMetrics,
     prepare_bridge_command,
     process_tree::{ManagedChild, prepare_child_command},
@@ -31,94 +32,85 @@ pub(crate) fn run_from_args(args: &[String]) -> bool {
 
 pub(crate) fn launch_process(
     runtime_dir: &Path,
-    config: &CefConfig,
+    config: &FenestraWindowConfig,
     bridge_handlers: &BridgeHandlers,
     url: &str,
     metrics: LaunchMetrics,
-) -> CefResult<CefProcess> {
-    #[cfg(target_os = "linux")]
-    {
-        let host_binary = crate::ensure_cef_host(runtime_dir)
-            .map_err(|message| CefError::CreationFailed { message })?;
-        metrics.mark("host.ready");
-        let host_config_path =
-            std::env::temp_dir().join(format!("fenestra-osr-{}.json", osr_instance_key()));
-        let body = serde_json::json!({
-            "runtime_dir": runtime_dir,
-            "host_binary": host_binary,
-            "url": url,
-            "app_id": config.app_id,
-            "title": config.title,
-            "width": config.width,
-            "height": config.height,
-            "min_width": config.min_width,
-            "min_height": config.min_height,
-            "resizable": config.resizable,
-            "visible": config.visible,
-            "active": config.active,
-            "hide_on_blur": config.hide_on_blur,
-            "always_on_top": config.always_on_top,
-            "transparent": config.transparent,
-            "shell_surface": crate::osr_protocol::shell_surface_to_json(config.shell_surface.as_ref()),
-            "background_effect": config.effective_background_effect().as_str(),
-            "chrome": config.chrome.as_str(),
-            "bridge_commands": crate::activity::bridge_commands_with_internal(config.bridge.commands()),
-            "regions": crate::osr_protocol::regions_to_json(&config.regions),
-            "drag_regions": crate::osr_protocol::rects_to_json(&config.drag_regions),
-            "drag_exclusion_regions": crate::osr_protocol::rects_to_json(&config.drag_exclusion_regions),
-            "control_regions": crate::osr_protocol::control_regions_to_json(&config.control_regions),
-            "lifecycle": crate::osr_protocol::lifecycle_to_json(&config.lifecycle),
-        });
-        std::fs::write(&host_config_path, body.to_string()).map_err(|error| {
-            CefError::CreationFailed {
-                message: format!("failed to write Fenestra OSR host config: {error}"),
-            }
-        })?;
+) -> FenestraResult<FenestraProcess> {
+    let host_binary = crate::ensure_cef_host(runtime_dir)
+        .map_err(|message| FenestraError::CreationFailed { message })?;
+    metrics.mark("host.ready");
+    let host_config_path =
+        std::env::temp_dir().join(format!("fenestra-osr-{}.json", osr_instance_key()));
+    let body = serde_json::json!({
+        "runtime_dir": runtime_dir,
+        "host_binary": host_binary,
+        "url": url,
+        "app_id": config.app_id,
+        "title": config.title,
+        "width": config.width,
+        "height": config.height,
+        "min_width": config.min_width,
+        "min_height": config.min_height,
+        "resizable": config.resizable,
+        "visible": config.visible,
+        "active": config.active,
+        "hide_on_blur": config.hide_on_blur,
+        "always_on_top": config.always_on_top,
+        "transparent": config.transparent,
+        "shell_surface": crate::osr_protocol::shell_surface_to_json(config.shell_surface.as_ref()),
+        "background_effect": config.effective_background_effect().as_str(),
+        "chrome": config.chrome.as_str(),
+        "bridge_commands": crate::activity::bridge_commands_with_internal(config.bridge.commands()),
+        "regions": crate::osr_protocol::regions_to_json(&config.regions),
+        "drag_regions": crate::osr_protocol::rects_to_json(&config.drag_regions),
+        "drag_exclusion_regions": crate::osr_protocol::rects_to_json(&config.drag_exclusion_regions),
+        "control_regions": crate::osr_protocol::control_regions_to_json(&config.control_regions),
+        "lifecycle": crate::osr_protocol::lifecycle_to_json(&config.lifecycle),
+    });
+    std::fs::write(&host_config_path, body.to_string()).map_err(|error| {
+        FenestraError::CreationFailed {
+            message: format!("failed to write Fenestra OSR host config: {error}"),
+        }
+    })?;
 
-        let exe = std::env::current_exe().map_err(|error| CefError::CreationFailed {
-            message: error.to_string(),
-        })?;
-        let mut command = Command::new(exe);
-        command
-            .arg(OSR_HOST_ARG)
-            .arg(&host_config_path)
-            .stderr(Stdio::inherit());
-        prepare_bridge_command(&mut command, bridge_handlers);
-        prepare_child_command(&mut command);
-        let mut child = command.spawn().map_err(|error| CefError::CreationFailed {
+    let exe = std::env::current_exe().map_err(|error| FenestraError::CreationFailed {
+        message: error.to_string(),
+    })?;
+    let mut command = Command::new(exe);
+    command
+        .arg(OSR_HOST_ARG)
+        .arg(&host_config_path)
+        .stderr(Stdio::inherit());
+    prepare_bridge_command(&mut command, bridge_handlers);
+    prepare_child_command(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|error| FenestraError::CreationFailed {
             message: format!("failed to launch Fenestra OSR host: {error}"),
         })?;
-        metrics.mark(format!("osr_host.spawned.pid.{}", child.id()));
-        let activity = crate::activity::ActivityRegistry::default();
-        let bridge_dispatch = spawn_bridge_dispatch(
-            &mut child,
-            BridgeRuntime::new(
-                bridge_handlers.clone(),
-                config.bridge.clone(),
-                config.security.clone(),
-            ),
-            activity.clone(),
-        );
-        Ok(CefProcess {
-            child: ManagedChild::new(child),
-            sidecars: Vec::new(),
-            bridge_thread: bridge_dispatch.thread,
-            bridge_emitter: bridge_dispatch.emitter,
-            desktop_services: None,
-            desktop_event_thread: None,
-            desktop_event_running: None,
-            activity,
-            metrics,
-        })
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (runtime_dir, config, bridge_handlers, url, metrics);
-        Err(CefError::CreationFailed {
-            message: "CEF OSR host is currently implemented for Linux".to_string(),
-        })
-    }
+    metrics.mark(format!("osr_host.spawned.pid.{}", child.id()));
+    let activity = crate::activity::ActivityRegistry::default();
+    let bridge_dispatch = spawn_bridge_dispatch(
+        &mut child,
+        BridgeRuntime::new(
+            bridge_handlers.clone(),
+            config.bridge.clone(),
+            config.security.clone(),
+        ),
+        activity.clone(),
+    );
+    Ok(FenestraProcess {
+        child: ManagedChild::new(child),
+        sidecars: Vec::new(),
+        bridge_thread: bridge_dispatch.thread,
+        bridge_emitter: bridge_dispatch.emitter,
+        desktop_services: None,
+        desktop_event_thread: None,
+        desktop_event_running: None,
+        activity,
+        metrics,
+    })
 }
 
 pub(crate) fn cef_osr_command(

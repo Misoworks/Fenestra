@@ -23,6 +23,7 @@ use winit::{
     event_loop::{ActiveEventLoop, EventLoop},
     window::{Window as WinitWindow, WindowAttributes, WindowId, WindowLevel},
 };
+#[cfg(target_os = "linux")]
 use x11rb::{
     connection::Connection,
     protocol::xproto::{
@@ -32,15 +33,19 @@ use x11rb::{
     rust_connection::RustConnection,
 };
 
+#[cfg(target_os = "linux")]
 mod osr;
+#[cfg(target_os = "linux")]
 mod osr_host;
+#[cfg(target_os = "linux")]
 mod osr_protocol;
 
 pub use fenestra_cef::{
-    ActivityOptions, ActivityRecord, CefActivityLease, CefLaunchMetric, CefLaunchMetricsSnapshot,
-    CefLifecyclePolicy, CefWindowChrome, CefWindowControlAction, CefWindowControlRegion,
-    FENESTRA_TRACE_ENV, ShellSurfaceAnchor, ShellSurfaceKeyboardInteractivity, ShellSurfaceLayer,
-    ShellSurfaceMargin, ShellSurfaceOptions,
+    ActivityOptions, ActivityRecord, FENESTRA_TRACE_ENV, FenestraActivityLease,
+    FenestraLaunchMetric, FenestraLaunchMetricsSnapshot, FenestraLifecyclePolicy,
+    FenestraWindowChrome, FenestraWindowControlAction, FenestraWindowControlRegion,
+    ShellSurfaceAnchor, ShellSurfaceKeyboardInteractivity, ShellSurfaceLayer, ShellSurfaceMargin,
+    ShellSurfaceOptions,
 };
 pub use fenestra_runtime::{
     RuntimeConfig, RuntimeEngine, RuntimeError, RuntimeInfo, RuntimeInstallProgress,
@@ -82,12 +87,14 @@ pub enum WebViewError {
     SecurityViolation { message: String },
 }
 
-impl From<fenestra_cef::CefError> for WebViewError {
-    fn from(error: fenestra_cef::CefError) -> Self {
+impl From<fenestra_cef::FenestraError> for WebViewError {
+    fn from(error: fenestra_cef::FenestraError) -> Self {
         match error {
-            fenestra_cef::CefError::Runtime(error) => Self::Runtime(error),
-            fenestra_cef::CefError::CreationFailed { message } => Self::CreationFailed { message },
-            fenestra_cef::CefError::MobileSystemWebViewRequired => Self::CreationFailed {
+            fenestra_cef::FenestraError::Runtime(error) => Self::Runtime(error),
+            fenestra_cef::FenestraError::CreationFailed { message } => {
+                Self::CreationFailed { message }
+            }
+            fenestra_cef::FenestraError::MobileSystemWebViewRequired => Self::CreationFailed {
                 message: "CEF webviews use system webviews on mobile targets".to_string(),
             },
         }
@@ -115,7 +122,7 @@ pub struct WebViewConfig {
     pub always_on_top: bool,
     pub material: Material,
     pub chrome: WindowChrome,
-    pub cef_chrome: Option<CefWindowChrome>,
+    pub fenestra_window_chrome: Option<FenestraWindowChrome>,
     pub frameless: bool,
     pub transparent: bool,
     pub background_effect: WindowBackgroundEffect,
@@ -124,8 +131,8 @@ pub struct WebViewConfig {
     pub shell_surface: Option<ShellSurfaceOptions>,
     pub drag_regions: Vec<WindowRegionRect>,
     pub drag_exclusion_regions: Vec<WindowRegionRect>,
-    pub control_regions: Vec<CefWindowControlRegion>,
-    pub lifecycle: CefLifecyclePolicy,
+    pub control_regions: Vec<FenestraWindowControlRegion>,
+    pub lifecycle: FenestraLifecyclePolicy,
     pub security: WebViewSecurity,
     pub runtime: RuntimeConfig,
     pub bridge: BridgeRegistry,
@@ -152,7 +159,7 @@ impl Default for WebViewConfig {
             always_on_top: false,
             material: Material::Maris,
             chrome: WindowChrome::System,
-            cef_chrome: None,
+            fenestra_window_chrome: None,
             frameless: false,
             transparent: true,
             background_effect: WindowBackgroundEffect::None,
@@ -162,7 +169,7 @@ impl Default for WebViewConfig {
             drag_regions: Vec::new(),
             drag_exclusion_regions: Vec::new(),
             control_regions: Vec::new(),
-            lifecycle: CefLifecyclePolicy::default(),
+            lifecycle: FenestraLifecyclePolicy::default(),
             security: WebViewSecurity::default(),
             runtime: RuntimeConfig::default(),
             bridge: BridgeRegistry::default(),
@@ -273,7 +280,7 @@ impl WebViewSecurity {
         self
     }
 
-    fn to_cef(&self) -> fenestra_cef::WebViewSecurity {
+    fn to_fenestra_cef(&self) -> fenestra_cef::WebViewSecurity {
         fenestra_cef::WebViewSecurity {
             remote_content: self.remote_content,
             allowed_origins: self.allowed_origins.clone(),
@@ -296,7 +303,7 @@ pub struct WebViewWindow {
 }
 
 pub struct WebViewProcess {
-    cef: Option<fenestra_cef::CefProcess>,
+    cef: Option<fenestra_cef::FenestraProcess>,
     child: Option<Child>,
     bridge_thread: Option<JoinHandle<()>>,
     bridge_emitter: Option<BridgeEventEmitter>,
@@ -306,7 +313,7 @@ pub struct WebViewProcess {
 }
 
 impl WebViewProcess {
-    fn from_cef(process: fenestra_cef::CefProcess) -> Self {
+    fn from_fenestra_cef(process: fenestra_cef::FenestraProcess) -> Self {
         Self {
             cef: Some(process),
             child: None,
@@ -408,13 +415,13 @@ impl WebViewProcess {
             .is_some_and(|emitter| emitter.emit_host_control("focus", "1"))
     }
 
-    pub fn begin_activity(&self, name: impl Into<String>) -> Option<CefActivityLease> {
+    pub fn begin_activity(&self, name: impl Into<String>) -> Option<FenestraActivityLease> {
         self.cef
             .as_ref()
             .map(|process| process.begin_activity(name))
     }
 
-    pub fn begin_activity_with(&self, options: ActivityOptions) -> Option<CefActivityLease> {
+    pub fn begin_activity_with(&self, options: ActivityOptions) -> Option<FenestraActivityLease> {
         self.cef
             .as_ref()
             .map(|process| process.begin_activity_with(options))
@@ -423,12 +430,14 @@ impl WebViewProcess {
     pub fn activities(&self) -> Vec<ActivityRecord> {
         self.cef
             .as_ref()
-            .map(fenestra_cef::CefProcess::activities)
+            .map(fenestra_cef::FenestraProcess::activities)
             .unwrap_or_default()
     }
 
-    pub fn metrics(&self) -> Option<CefLaunchMetricsSnapshot> {
-        self.cef.as_ref().map(fenestra_cef::CefProcess::metrics)
+    pub fn metrics(&self) -> Option<FenestraLaunchMetricsSnapshot> {
+        self.cef
+            .as_ref()
+            .map(fenestra_cef::FenestraProcess::metrics)
     }
 
     fn start_desktop_event_forwarder(&mut self) {
@@ -700,49 +709,49 @@ impl WebViewWindow {
 
     pub fn chrome(mut self, chrome: WindowChrome) -> Self {
         self.config.chrome = chrome;
-        self.config.cef_chrome = None;
+        self.config.fenestra_window_chrome = None;
         self.config.frameless = !chrome.uses_native_decorations();
         self
     }
 
-    pub fn cef_chrome(mut self, chrome: CefWindowChrome) -> Self {
-        self.config.cef_chrome = Some(chrome);
+    pub fn fenestra_window_chrome(mut self, chrome: FenestraWindowChrome) -> Self {
+        self.config.fenestra_window_chrome = Some(chrome);
         self.config.frameless = !chrome.uses_native_decorations();
         self.config.chrome = match chrome {
-            CefWindowChrome::System => WindowChrome::System,
-            CefWindowChrome::Fenestra => WindowChrome::Stuk,
-            CefWindowChrome::Frameless | CefWindowChrome::None => WindowChrome::None,
+            FenestraWindowChrome::System => WindowChrome::System,
+            FenestraWindowChrome::Fenestra => WindowChrome::Stuk,
+            FenestraWindowChrome::Frameless | FenestraWindowChrome::None => WindowChrome::None,
         };
         self
     }
 
     pub fn system_chrome(mut self) -> Self {
         self.config.chrome = WindowChrome::System;
-        self.config.cef_chrome = Some(CefWindowChrome::System);
+        self.config.fenestra_window_chrome = Some(FenestraWindowChrome::System);
         self.config.frameless = false;
         self
     }
 
     pub fn fenestra_chrome(mut self) -> Self {
         self.config.chrome = WindowChrome::Stuk;
-        self.config.cef_chrome = Some(CefWindowChrome::Fenestra);
+        self.config.fenestra_window_chrome = Some(FenestraWindowChrome::Fenestra);
         self.config.frameless = true;
         self
     }
 
     pub fn frameless(mut self) -> Self {
         self.config.chrome = WindowChrome::None;
-        self.config.cef_chrome = Some(CefWindowChrome::Frameless);
+        self.config.fenestra_window_chrome = Some(FenestraWindowChrome::Frameless);
         self.config.frameless = true;
         self
     }
 
     pub fn with_frameless(mut self, frameless: bool) -> Self {
         self.config.frameless = frameless;
-        self.config.cef_chrome = Some(if frameless {
-            CefWindowChrome::Frameless
+        self.config.fenestra_window_chrome = Some(if frameless {
+            FenestraWindowChrome::Frameless
         } else {
-            CefWindowChrome::System
+            FenestraWindowChrome::System
         });
         self.config.chrome = if frameless {
             WindowChrome::None
@@ -754,7 +763,7 @@ impl WebViewWindow {
 
     pub fn no_chrome(mut self) -> Self {
         self.config.chrome = WindowChrome::None;
-        self.config.cef_chrome = Some(CefWindowChrome::None);
+        self.config.fenestra_window_chrome = Some(FenestraWindowChrome::None);
         self.config.frameless = true;
         self
     }
@@ -762,7 +771,7 @@ impl WebViewWindow {
     pub fn shell_surface(mut self, shell_surface: ShellSurfaceOptions) -> Self {
         self.config.shell_surface = Some(shell_surface);
         self.config.chrome = WindowChrome::None;
-        self.config.cef_chrome = Some(CefWindowChrome::None);
+        self.config.fenestra_window_chrome = Some(FenestraWindowChrome::None);
         self.config.frameless = true;
         self.config.transparent = true;
         self
@@ -784,16 +793,16 @@ impl WebViewWindow {
 
     pub fn control_region(
         mut self,
-        action: CefWindowControlAction,
+        action: FenestraWindowControlAction,
         rect: WindowRegionRect,
     ) -> Self {
         self.config
             .control_regions
-            .push(CefWindowControlRegion::new(action, rect));
+            .push(FenestraWindowControlRegion::new(action, rect));
         self
     }
 
-    pub fn lifecycle_policy(mut self, lifecycle: CefLifecyclePolicy) -> Self {
+    pub fn lifecycle_policy(mut self, lifecycle: FenestraLifecyclePolicy) -> Self {
         self.config.lifecycle = lifecycle;
         self
     }
@@ -961,11 +970,11 @@ impl WebViewWindow {
         self
     }
 
-    fn into_cef_window(self) -> fenestra_cef::CefWindow {
+    fn into_fenestra_window(self) -> fenestra_cef::FenestraWindow {
         let config = self.config;
-        let cef_chrome = webview_cef_chrome(&config);
-        let mut window = fenestra_cef::CefWindow::new();
-        window.config = fenestra_cef::CefConfig {
+        let fenestra_window_chrome = webview_fenestra_window_chrome(&config);
+        let mut window = fenestra_cef::FenestraWindow::new();
+        window.config = fenestra_cef::FenestraWindowConfig {
             entry: config.entry,
             url: config.url,
             dev_url: config.dev_url,
@@ -982,8 +991,8 @@ impl WebViewWindow {
             hide_on_blur: config.hide_on_blur,
             always_on_top: config.always_on_top,
             transparent: config.transparent,
-            frameless: config.frameless || !cef_chrome.uses_native_decorations(),
-            chrome: cef_chrome,
+            frameless: config.frameless || !fenestra_window_chrome.uses_native_decorations(),
+            chrome: fenestra_window_chrome,
             background_effect: config.background_effect,
             low_power_background_effect: config.low_power_background_effect,
             regions: config.regions,
@@ -1002,8 +1011,8 @@ impl WebViewWindow {
             },
             lifecycle: config.lifecycle,
             runtime: config.runtime,
-            bridge: config.bridge.to_cef(),
-            security: config.security.to_cef(),
+            bridge: config.bridge.to_fenestra_cef(),
+            security: config.security.to_fenestra_cef(),
         };
 
         for (name, handler) in self.bridge_handlers.handlers {
@@ -1032,10 +1041,10 @@ impl WebViewWindow {
     }
 
     pub fn launch_with_runtime(self, runtime: RuntimeInfo) -> WebViewResult<WebViewProcess> {
-        let cef_window = self.into_cef_window();
+        let cef_window = self.into_fenestra_window();
         cef_window
             .launch_with_runtime(runtime)
-            .map(WebViewProcess::from_cef)
+            .map(WebViewProcess::from_fenestra_cef)
             .map_err(WebViewError::from)
     }
 
@@ -1080,6 +1089,7 @@ pub fn run_native_host_from_args(args: &[String]) -> bool {
     if fenestra_cef::run_fenestra_host_from_args(args) {
         return true;
     }
+    #[cfg(target_os = "linux")]
     if osr::run_from_args(args) {
         return true;
     }
@@ -2924,17 +2934,17 @@ impl BridgeRegistry {
         )
     }
 
-    fn to_cef(&self) -> fenestra_cef::BridgeRegistry {
+    fn to_fenestra_cef(&self) -> fenestra_cef::BridgeRegistry {
         let mut registry = fenestra_cef::BridgeRegistry::default();
         for command in &self.commands {
-            registry.register_descriptor(command.to_cef());
+            registry.register_descriptor(command.to_fenestra_cef());
         }
         registry
     }
 }
 
 impl BridgeCommandDescriptor {
-    fn to_cef(&self) -> fenestra_cef::BridgeCommandDescriptor {
+    fn to_fenestra_cef(&self) -> fenestra_cef::BridgeCommandDescriptor {
         fenestra_cef::BridgeCommandDescriptor {
             name: self.name.clone(),
             description: self.description.clone(),
@@ -2946,14 +2956,16 @@ impl BridgeCommandDescriptor {
     }
 }
 
-fn webview_cef_chrome(config: &WebViewConfig) -> CefWindowChrome {
-    config.cef_chrome.unwrap_or(match config.chrome {
-        WindowChrome::System => CefWindowChrome::System,
-        WindowChrome::Stuk | WindowChrome::Compact | WindowChrome::Sidebar => {
-            CefWindowChrome::Fenestra
-        }
-        WindowChrome::None => CefWindowChrome::None,
-    })
+fn webview_fenestra_window_chrome(config: &WebViewConfig) -> FenestraWindowChrome {
+    config
+        .fenestra_window_chrome
+        .unwrap_or(match config.chrome {
+            WindowChrome::System => FenestraWindowChrome::System,
+            WindowChrome::Stuk | WindowChrome::Compact | WindowChrome::Sidebar => {
+                FenestraWindowChrome::Fenestra
+            }
+            WindowChrome::None => FenestraWindowChrome::None,
+        })
 }
 
 fn canonical_entry(entry: &str) -> WebViewResult<PathBuf> {
@@ -3182,7 +3194,7 @@ mod tests {
             .titlebar_drag_region(48)
             .drag_exclusion_region(WindowRegionRect::new(820, 0, 80, 48))
             .control_region(
-                CefWindowControlAction::Close,
+                FenestraWindowControlAction::Close,
                 WindowRegionRect::new(-44, 8, 28, 28),
             )
             .active_frame_rate(120)
@@ -3190,7 +3202,10 @@ mod tests {
             .suspend_on_blur(true)
             .hibernate_after(Duration::from_secs(30));
 
-        assert_eq!(window.config.cef_chrome, Some(CefWindowChrome::Fenestra));
+        assert_eq!(
+            window.config.fenestra_window_chrome,
+            Some(FenestraWindowChrome::Fenestra)
+        );
         assert!(window.config.frameless);
         assert_eq!(window.config.drag_regions.len(), 1);
         assert_eq!(window.config.drag_exclusion_regions.len(), 1);

@@ -25,19 +25,19 @@ than system-wide.
 
 ## Standalone Window
 
-Use `CefWindow` for a pure Fenestra app:
+Use `FenestraWindow` for a pure Fenestra app:
 
 ```rust
 use fenestra_cef::{
-    CefResult, CefWindow, CefWindowChrome, WindowBackgroundEffect, WindowRegion,
+    FenestraResult, FenestraWindow, FenestraWindowChrome, WindowBackgroundEffect, WindowRegion,
 };
 
-fn main() -> CefResult<()> {
+fn main() -> FenestraResult<()> {
     if fenestra_cef::run_fenestra_host_from_args(&std::env::args().collect::<Vec<_>>()) {
         return Ok(());
     }
 
-    let process = CefWindow::new()
+    let process = FenestraWindow::new()
         .app_id("com.example.notes")
         .title("Notes")
         .entry("ui/dist/index.html")
@@ -65,10 +65,10 @@ Window modes:
 Declare drag and control regions when the web UI owns the titlebar:
 
 ```rust
-CefWindow::new()
+FenestraWindow::new()
     .frameless()
     .titlebar_drag_region(42)
-    .control_region(CefWindowControlAction::Close, WindowRegionRect::new(-44, 8, 28, 28));
+    .control_region(FenestraWindowControlAction::Close, WindowRegionRect::new(-44, 8, 28, 28));
 ```
 
 ## Dev Workflow
@@ -76,7 +76,7 @@ CefWindow::new()
 For Vite-style apps:
 
 ```rust
-CefWindow::new()
+FenestraWindow::new()
     .entry("ui/dist/index.html")
     .vite_dev_server(5173);
 ```
@@ -88,7 +88,7 @@ normal Vite/Bun workflows do not need host workarounds.
 loads the dev URL while developing and keeps the production URL for packaged/runtime config:
 
 ```rust
-CefWindow::new()
+FenestraWindow::new()
     .url("https://raday.lantharos.com")
     .dev_url("http://localhost:5173")
     .dev_command("bun run dev -- --host localhost --port 5173 --strictPort");
@@ -139,7 +139,7 @@ Use `url(...)` for an existing hosted app. This is the normal path for turning a
 product into a desktop app without copying the web build into the desktop package:
 
 ```rust
-let process = CefWindow::new()
+let process = FenestraWindow::new()
     .app_id("com.lantharos.raday")
     .title("Raday")
     .url("https://raday.lantharos.com")
@@ -191,7 +191,7 @@ assets. Add those fields only when the package should include a local web build.
 Register native commands explicitly:
 
 ```rust
-let process = CefWindow::new()
+let process = FenestraWindow::new()
     .entry("ui/dist/index.html")
     .bridge_descriptor_handler(
         BridgeCommandDescriptor::new("notes.list")
@@ -213,7 +213,7 @@ const notes = await window.fenestra.bridge.invoke("notes.list");
 Use `BridgeCommandDescriptor` for permissions, target gating, and per-command allowed origins:
 
 ```rust
-CefWindow::new()
+FenestraWindow::new()
     .url("https://raday.lantharos.com")
     .security(WebViewSecurity::default().allow_origin("https://raday.lantharos.com"))
     .bridge_descriptor_handler(
@@ -274,7 +274,7 @@ network loss, or app restart, move it to a Rust worker and persist progress.
 Lifecycle policy controls rendering and hibernation:
 
 ```rust
-CefWindow::new()
+FenestraWindow::new()
     .hidden()
     .hide_on_blur(true)
     .background_frame_rate(1)
@@ -285,9 +285,9 @@ Defaults are palette-friendly: hidden windows suspend and throttle but stay warm
 resume for lower memory, opt in:
 
 ```rust
-CefWindow::new()
+FenestraWindow::new()
     .hidden()
-    .lifecycle_policy(CefLifecyclePolicy::memory_saver_hidden_window());
+    .lifecycle_policy(FenestraLifecyclePolicy::memory_saver_hidden_window());
 ```
 
 Web lifecycle events:
@@ -304,7 +304,7 @@ window.addEventListener("fenestra:hibernate", event => {});
 Desktop integrations are declared on the window:
 
 ```rust
-CefWindow::new()
+FenestraWindow::new()
     .tray_icon(TrayIcon::new("main", "Notes"))
     .autostart(AutostartEntry::new("notes", "Notes", "notes --background"))
     .global_shortcut(GlobalShortcutRegistration::new("show", "Ctrl+Space"))
@@ -344,9 +344,36 @@ toolchain and credentials. `--binary` packages a binary built by CI or a cross-c
 
 ## Platform Notes
 
-Linux is Wayland-first. Frameless, transparent, glass, shell surfaces, and rounded/region-aware
-composition use the OSR native host path. Windows and macOS support should use the same public API,
-with backend-specific host implementations behind Fenestra.
+Fenestra exposes one cross-platform builder, `FenestraWindow`, on every supported target. The
+backend is CEF on Linux, Windows, and macOS, so the public API does not change between platforms.
 
-Do not switch to system webviews for consistency. If a platform needs another backend, it should
-preserve the Fenestra bridge, lifecycle, activity, runtime, and window APIs.
+| Platform | Backend | Status |
+| --- | --- | --- |
+| Linux | CEF with OSR native host (Wayland-first) | Full transparency, blur, glass, shell surfaces |
+| Windows | CEF windowed | System chrome, frameless, dev workflow, runtime install |
+| macOS  | CEF windowed | System chrome, frameless, dev workflow, runtime install |
+
+OSR features (frameless transparent windows, blur regions, shell surfaces, layer-shell palettes)
+currently use the Linux Wayland host. On Windows and macOS the same `FenestraWindow` builder falls
+back to the windowed CEF host with native decorations; transparency-style modes still work, the
+compositor materials are skipped where the OS does not provide them.
+
+`fenestra-cef` keeps Linux-only crates (`layershellev`, `ksni`, `ashpd`, `wayland-client`, `x11rb`)
+behind `cfg(target_os = "linux")` so a downstream app can build for Windows and macOS without
+pulling those dependencies. Use the same `fenestra_cef::FenestraWindow` API on every host; the crate
+selects the right backend internally.
+
+CEF host build:
+
+- `~/.local/share/fenestra/runtimes/cef/<version>-<package>/` on Linux
+- `%LOCALAPPDATA%\fenestra\runtimes\cef\...` on Windows (via `HOME` fallback during cross-platform testing)
+- `~/Library/Application Support/fenestra/runtimes/cef/...` on macOS
+
+Fenestra builds a small CEF host binary from `host/shared/` on every platform. The host build needs
+CMake plus a platform compiler toolchain (Ninja or Visual Studio on Windows, Xcode Command Line
+Tools on macOS, GCC/Clang on Linux). Linux-only macros such as `SET_LINUX_SUID_PERMISSIONS` are
+conditioned on `OS_LINUX` inside the CMake file.
+
+Do not switch to system webviews for cross-platform consistency. If a platform ever needs another
+backend, it should still preserve the Fenestra bridge, lifecycle, activity, runtime, and window
+APIs.

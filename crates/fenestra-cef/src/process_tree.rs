@@ -196,6 +196,7 @@ mod platform {
 
     pub(super) fn prepare_child_command(_command: &mut Command) {}
 
+    #[allow(dead_code)]
     pub(super) fn install_signal_cleanup() {}
 
     pub(super) fn register_process_group(_id: u32) {}

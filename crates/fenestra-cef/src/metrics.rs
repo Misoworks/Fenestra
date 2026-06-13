@@ -6,16 +6,16 @@ use std::{
 pub const FENESTRA_TRACE_ENV: &str = "FENESTRA_TRACE";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CefLaunchMetric {
+pub struct FenestraLaunchMetric {
     pub stage: String,
     pub elapsed: Duration,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CefLaunchMetricsSnapshot {
+pub struct FenestraLaunchMetricsSnapshot {
     pub label: String,
     pub elapsed: Duration,
-    pub stages: Vec<CefLaunchMetric>,
+    pub stages: Vec<FenestraLaunchMetric>,
 }
 
 #[derive(Clone, Debug)]
@@ -23,7 +23,7 @@ pub(crate) struct LaunchMetrics {
     started: Instant,
     label: String,
     trace: bool,
-    stages: Arc<Mutex<Vec<CefLaunchMetric>>>,
+    stages: Arc<Mutex<Vec<FenestraLaunchMetric>>>,
 }
 
 impl LaunchMetrics {
@@ -47,12 +47,12 @@ impl LaunchMetrics {
             );
         }
         if let Ok(mut stages) = self.stages.lock() {
-            stages.push(CefLaunchMetric { stage, elapsed });
+            stages.push(FenestraLaunchMetric { stage, elapsed });
         }
     }
 
-    pub(crate) fn snapshot(&self) -> CefLaunchMetricsSnapshot {
-        CefLaunchMetricsSnapshot {
+    pub(crate) fn snapshot(&self) -> FenestraLaunchMetricsSnapshot {
+        FenestraLaunchMetricsSnapshot {
             label: self.label.clone(),
             elapsed: self.started.elapsed(),
             stages: self

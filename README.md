@@ -20,11 +20,11 @@ services, dev workflow, and bundling, see
 Fenestra has three standalone window modes:
 
 ```rust
-CefWindow::new().system_chrome()
-CefWindow::new().fenestra_chrome()
-CefWindow::new().frameless()
-CefWindow::new().frameless().glass()
-CefWindow::new().frameless().glass_material(WindowBackgroundEffect::Niko)
+FenestraWindow::new().system_chrome()
+FenestraWindow::new().fenestra_chrome()
+FenestraWindow::new().frameless()
+FenestraWindow::new().frameless().glass()
+FenestraWindow::new().frameless().glass_material(WindowBackgroundEffect::Niko)
 ```
 
 - `system_chrome()` uses normal OS/window-manager decorations.
@@ -35,7 +35,9 @@ CefWindow::new().frameless().glass_material(WindowBackgroundEffect::Niko)
 
 Linux is Wayland-first. Frameless, transparent, and glass windows use the OSR native-host path by
 default; the direct CEF top-level path remains available for opaque system-decorated compatibility
-windows.
+windows. Windows and macOS use the windowed CEF host with the same `FenestraWindow` API; see
+[`docs/implementation-guide.md`](docs/implementation-guide.md#platform-notes) for what each backend
+currently supports.
 
 Run the modes:
 
@@ -128,7 +130,7 @@ loopback variants such as `localhost`, `127.0.0.1`, and `::1`.
 Standalone Fenestra windows can declare desktop service requirements alongside the webview:
 
 ```rust
-CefWindow::new()
+FenestraWindow::new()
     .tray_icon(TrayIcon::new("main", "Notes"))
     .autostart(AutostartEntry::new("notes", "Notes", "notes --background"))
     .single_instance(SingleInstancePolicy::FocusExisting);
@@ -195,7 +197,7 @@ FENESTRA_TRACE=1 cargo run -p fenestra-notes -- --glass
 Launched processes also expose a metrics snapshot:
 
 ```rust
-let process = CefWindow::new().vite_dev_server(5173).launch_or_install()?;
+let process = FenestraWindow::new().vite_dev_server(5173).launch_or_install()?;
 let metrics = process.metrics();
 ```
 
@@ -208,8 +210,8 @@ changes when tracing is enabled.
 Fenestra can throttle or hibernate OSR webviews without app code managing CEF processes:
 
 ```rust
-CefWindow::new()
-    .lifecycle_policy(CefLifecyclePolicy::browser_tab())
+FenestraWindow::new()
+    .lifecycle_policy(FenestraLifecyclePolicy::browser_tab())
     .background_frame_rate(5)
     .hibernate_after(Duration::from_secs(300));
 ```
@@ -252,7 +254,7 @@ window or webview process should not be hibernated while that work is active.
 Hidden palette apps can keep a process alive while the native window is hidden:
 
 ```rust
-let process = CefWindow::new()
+let process = FenestraWindow::new()
     .hidden()
     .frameless()
     .glass()
@@ -268,9 +270,9 @@ show instantly. They resume when shown or focused. To trade instant resume for l
 opt into hibernation explicitly:
 
 ```rust
-CefWindow::new()
+FenestraWindow::new()
     .hidden()
-    .lifecycle_policy(CefLifecyclePolicy::memory_saver_hidden_window());
+    .lifecycle_policy(FenestraLifecyclePolicy::memory_saver_hidden_window());
 ```
 
 The same controls are available in web content:

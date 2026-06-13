@@ -8,20 +8,32 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-const HOST_CMAKE: &str = include_str!("../host/linux/CMakeLists.txt");
-const HOST_MAIN: &str = include_str!("../host/linux/main.cc");
-const HOST_APP_H: &str = include_str!("../host/linux/app.h");
-const HOST_APP_CC: &str = include_str!("../host/linux/app.cc");
-const HOST_HANDLER_H: &str = include_str!("../host/linux/handler.h");
-const HOST_HANDLER_CC: &str = include_str!("../host/linux/handler.cc");
-const HOST_OSR_HANDLER_H: &str = include_str!("../host/linux/osr_handler.h");
-const HOST_OSR_HANDLER_CC: &str = include_str!("../host/linux/osr_handler.cc");
+const HOST_CMAKE: &str = include_str!("../host/shared/CMakeLists.txt");
+const HOST_MAIN: &str = include_str!("../host/shared/main.cc");
+const HOST_APP_H: &str = include_str!("../host/shared/app.h");
+const HOST_APP_CC: &str = include_str!("../host/shared/app.cc");
+const HOST_HANDLER_H: &str = include_str!("../host/shared/handler.h");
+const HOST_HANDLER_CC: &str = include_str!("../host/shared/handler.cc");
+const HOST_OSR_HANDLER_H: &str = include_str!("../host/shared/osr_handler.h");
+const HOST_OSR_HANDLER_CC: &str = include_str!("../host/shared/osr_handler.cc");
 static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(1);
 const HOST_BUILD_LOCK_TIMEOUT: Duration = Duration::from_secs(600);
 const HOST_BUILD_LOCK_STALE_AFTER: Duration = Duration::from_secs(30 * 60);
 
+pub fn cef_host_binary_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "fenestra-cef-host.exe"
+    } else {
+        "fenestra-cef-host"
+    }
+}
+
+pub fn cef_host_release_binary(runtime_dir: &Path) -> PathBuf {
+    runtime_dir.join("Release").join(cef_host_binary_name())
+}
+
 pub fn ensure_cef_host(runtime_dir: &Path) -> Result<PathBuf, String> {
-    let binary = runtime_dir.join("Release").join("fenestra-cef-host");
+    let binary = cef_host_release_binary(runtime_dir);
     let source_dir = runtime_dir.join(".fenestra-host-src");
     let build_dir = runtime_dir.join(".fenestra-host-build");
     let source_stamp = build_dir.join("fenestra-host-source.fnv");
@@ -51,26 +63,26 @@ pub fn ensure_cef_host(runtime_dir: &Path) -> Result<PathBuf, String> {
     std::fs::create_dir_all(&build_dir).map_err(|error| error.to_string())?;
     write_host_source(&source_dir)?;
 
-    let generator = if command_available("ninja") {
-        "Ninja"
-    } else {
-        "Unix Makefiles"
-    };
-    run_checked(
-        Command::new("cmake")
-            .arg("-S")
-            .arg(&source_dir)
-            .arg("-B")
-            .arg(&build_dir)
-            .arg("-G")
-            .arg(generator)
-            .arg("-DCMAKE_BUILD_TYPE=Release")
-            .arg(format!("-DCEF_ROOT={}", runtime_dir.display())),
-    )?;
+    let generator = pick_cmake_generator();
+    let mut configure = Command::new("cmake");
+    configure
+        .arg("-S")
+        .arg(&source_dir)
+        .arg("-B")
+        .arg(&build_dir);
+    if !generator.is_empty() {
+        configure.arg("-G").arg(generator);
+    }
+    configure
+        .arg("-DCMAKE_BUILD_TYPE=Release")
+        .arg(format!("-DCEF_ROOT={}", runtime_dir.display()));
+    run_checked(&mut configure)?;
     run_checked(
         Command::new("cmake")
             .arg("--build")
             .arg(&build_dir)
+            .arg("--config")
+            .arg("Release")
             .arg("--target")
             .arg("fenestra-cef-host")
             .arg("--parallel"),
@@ -84,6 +96,19 @@ pub fn ensure_cef_host(runtime_dir: &Path) -> Result<PathBuf, String> {
             "CEF host build did not create {}",
             binary.display()
         ))
+    }
+}
+
+fn pick_cmake_generator() -> &'static str {
+    if cfg!(target_os = "windows") {
+        return "";
+    }
+    if command_available("ninja") {
+        "Ninja"
+    } else if cfg!(target_os = "macos") {
+        "Unix Makefiles"
+    } else {
+        "Unix Makefiles"
     }
 }
 

@@ -1,18 +1,36 @@
 mod activity;
 mod bridge;
-mod desktop_services;
 mod host;
 mod metrics;
-mod osr;
-mod osr_frame_buffer;
-mod osr_host;
-mod osr_layer_host;
-mod osr_protocol;
 mod process_tree;
 
+#[cfg(target_os = "linux")]
+mod desktop_services;
+#[cfg(target_os = "linux")]
+mod osr;
+#[cfg(target_os = "linux")]
+mod osr_frame_buffer;
+#[cfg(target_os = "linux")]
+mod osr_host;
+#[cfg(target_os = "linux")]
+mod osr_layer_host;
+#[cfg(target_os = "linux")]
+mod osr_protocol;
+
+#[cfg(not(target_os = "linux"))]
+mod desktop_services_stub;
+#[cfg(not(target_os = "linux"))]
+mod osr_stub;
+#[cfg(not(target_os = "linux"))]
+use desktop_services_stub as desktop_services;
+#[cfg(not(target_os = "linux"))]
+use osr_stub as osr;
+
+#[cfg(target_os = "linux")]
+use std::io;
 use std::{
     future::Future,
-    io::{self, BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Write},
     net::{TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
@@ -24,7 +42,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub use activity::{ActivityOptions, ActivityRecord, CefActivityLease};
+pub use activity::{ActivityOptions, ActivityRecord, FenestraActivityLease};
+#[cfg(target_os = "linux")]
 pub(crate) use bridge::BridgeRuntime;
 pub use bridge::{
     BridgeCommand, BridgeCommandDescriptor, BridgeError, BridgeHandlers, BridgeRegistry,
@@ -40,7 +59,7 @@ pub use fenestra_runtime::{
 };
 pub use host::{ensure_cef_host, ld_library_path, webview_cache_dir};
 use metrics::LaunchMetrics;
-pub use metrics::{CefLaunchMetric, CefLaunchMetricsSnapshot, FENESTRA_TRACE_ENV};
+pub use metrics::{FENESTRA_TRACE_ENV, FenestraLaunchMetric, FenestraLaunchMetricsSnapshot};
 use process_tree::{ManagedChild, prepare_child_command};
 pub use stuk_platform::{
     AutostartEntry, DeepLinkRegistration, GlobalShortcutRegistration, NativeMessagingHost,
@@ -52,6 +71,7 @@ pub use stuk_platform_shell::{
     ShellSurfaceOptions,
 };
 use thiserror::Error;
+#[cfg(target_os = "linux")]
 use winit::{dpi::PhysicalPosition, event_loop::ActiveEventLoop};
 
 pub(crate) const HOST_CONTROL_PREFIX: &str = "FENESTRA_HOST_CONTROL";
@@ -67,9 +87,13 @@ pub(crate) const DISABLED_CEF_FEATURES: &str = concat!(
 );
 
 pub(crate) fn apply_common_cef_args(command: &mut Command) {
+    #[cfg(target_os = "linux")]
+    {
+        command
+            .arg("--ozone-platform=wayland")
+            .arg("--enable-features=UseOzonePlatform");
+    }
     command
-        .arg("--ozone-platform=wayland")
-        .arg("--enable-features=UseOzonePlatform")
         .arg(format!("--disable-features={DISABLED_CEF_FEATURES}"))
         .arg("--disable-vulkan")
         .arg("--disable-gpu")
@@ -90,7 +114,7 @@ pub(crate) fn apply_common_cef_args(command: &mut Command) {
 }
 
 #[derive(Debug, Error)]
-pub enum CefError {
+pub enum FenestraError {
     #[error("{0}")]
     Runtime(#[from] RuntimeError),
     #[error("CEF webview creation failed: {message}")]
@@ -99,14 +123,14 @@ pub enum CefError {
     MobileSystemWebViewRequired,
 }
 
-pub type CefResult<T> = std::result::Result<T, CefError>;
+pub type FenestraResult<T> = std::result::Result<T, FenestraError>;
 
 pub fn run_fenestra_host_from_args(args: &[String]) -> bool {
     osr::run_from_args(args)
 }
 
 #[derive(Clone, Debug)]
-pub struct CefConfig {
+pub struct FenestraWindowConfig {
     pub entry: Option<String>,
     pub url: Option<String>,
     pub dev_url: Option<String>,
@@ -124,22 +148,22 @@ pub struct CefConfig {
     pub always_on_top: bool,
     pub transparent: bool,
     pub frameless: bool,
-    pub chrome: CefWindowChrome,
+    pub chrome: FenestraWindowChrome,
     pub background_effect: WindowBackgroundEffect,
     pub low_power_background_effect: Option<WindowBackgroundEffect>,
     pub regions: WindowRegions,
     pub shell_surface: Option<ShellSurfaceOptions>,
     pub drag_regions: Vec<WindowRegionRect>,
     pub drag_exclusion_regions: Vec<WindowRegionRect>,
-    pub control_regions: Vec<CefWindowControlRegion>,
+    pub control_regions: Vec<FenestraWindowControlRegion>,
     pub desktop_services: DesktopServiceConfig,
-    pub lifecycle: CefLifecyclePolicy,
+    pub lifecycle: FenestraLifecyclePolicy,
     pub runtime: RuntimeConfig,
     pub bridge: BridgeRegistry,
     pub security: WebViewSecurity,
 }
 
-impl Default for CefConfig {
+impl Default for FenestraWindowConfig {
     fn default() -> Self {
         Self {
             entry: None,
@@ -159,7 +183,7 @@ impl Default for CefConfig {
             always_on_top: false,
             transparent: false,
             frameless: false,
-            chrome: CefWindowChrome::System,
+            chrome: FenestraWindowChrome::System,
             background_effect: WindowBackgroundEffect::None,
             low_power_background_effect: None,
             regions: WindowRegions::default(),
@@ -168,7 +192,7 @@ impl Default for CefConfig {
             drag_exclusion_regions: Vec::new(),
             control_regions: Vec::new(),
             desktop_services: DesktopServiceConfig::default(),
-            lifecycle: CefLifecyclePolicy::default(),
+            lifecycle: FenestraLifecyclePolicy::default(),
             runtime: RuntimeConfig::default(),
             bridge: BridgeRegistry::default(),
             security: WebViewSecurity::default(),
@@ -176,7 +200,7 @@ impl Default for CefConfig {
     }
 }
 
-impl CefConfig {
+impl FenestraWindowConfig {
     pub fn effective_background_effect(&self) -> WindowBackgroundEffect {
         if let Some(effect) = self.low_power_background_effect
             && low_power_glass_requested()
@@ -202,7 +226,7 @@ fn env_flag(name: &str) -> bool {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CefLifecyclePolicy {
+pub struct FenestraLifecyclePolicy {
     pub active_frame_rate: u32,
     pub background_frame_rate: u32,
     pub suspend_on_minimize: bool,
@@ -212,7 +236,7 @@ pub struct CefLifecyclePolicy {
     pub hibernate_grace: Duration,
 }
 
-impl Default for CefLifecyclePolicy {
+impl Default for FenestraLifecyclePolicy {
     fn default() -> Self {
         Self {
             active_frame_rate: 60,
@@ -226,7 +250,7 @@ impl Default for CefLifecyclePolicy {
     }
 }
 
-impl CefLifecyclePolicy {
+impl FenestraLifecyclePolicy {
     pub fn browser_tab() -> Self {
         Self {
             suspend_on_blur: true,
@@ -274,7 +298,7 @@ pub struct DesktopServiceConfig {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum CefWindowChrome {
+pub enum FenestraWindowChrome {
     #[default]
     System,
     Fenestra,
@@ -282,7 +306,7 @@ pub enum CefWindowChrome {
     None,
 }
 
-impl CefWindowChrome {
+impl FenestraWindowChrome {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "system" => Some(Self::System),
@@ -308,13 +332,13 @@ impl CefWindowChrome {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CefWindowControlAction {
+pub enum FenestraWindowControlAction {
     Minimize,
     Maximize,
     Close,
 }
 
-impl CefWindowControlAction {
+impl FenestraWindowControlAction {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "minimize" => Some(Self::Minimize),
@@ -334,24 +358,24 @@ impl CefWindowControlAction {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CefWindowControlRegion {
-    pub action: CefWindowControlAction,
+pub struct FenestraWindowControlRegion {
+    pub action: FenestraWindowControlAction,
     pub rect: WindowRegionRect,
 }
 
-impl CefWindowControlRegion {
-    pub fn new(action: CefWindowControlAction, rect: WindowRegionRect) -> Self {
+impl FenestraWindowControlRegion {
+    pub fn new(action: FenestraWindowControlAction, rect: WindowRegionRect) -> Self {
         Self { action, rect }
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct CefWindow {
-    pub config: CefConfig,
+pub struct FenestraWindow {
+    pub config: FenestraWindowConfig,
     bridge_handlers: BridgeHandlers,
 }
 
-pub struct CefProcess {
+pub struct FenestraProcess {
     child: ManagedChild,
     sidecars: Vec<ManagedChild>,
     bridge_thread: Option<JoinHandle<()>>,
@@ -363,7 +387,7 @@ pub struct CefProcess {
     metrics: LaunchMetrics,
 }
 
-impl CefProcess {
+impl FenestraProcess {
     pub fn id(&self) -> u32 {
         self.child.id()
     }
@@ -423,11 +447,11 @@ impl CefProcess {
             .is_some_and(BridgeEventEmitter::focus_window)
     }
 
-    pub fn begin_activity(&self, name: impl Into<String>) -> CefActivityLease {
+    pub fn begin_activity(&self, name: impl Into<String>) -> FenestraActivityLease {
         self.begin_activity_with(ActivityOptions::new(name))
     }
 
-    pub fn begin_activity_with(&self, options: ActivityOptions) -> CefActivityLease {
+    pub fn begin_activity_with(&self, options: ActivityOptions) -> FenestraActivityLease {
         self.activity.lease(options, self.bridge_emitter.clone())
     }
 
@@ -439,7 +463,7 @@ impl CefProcess {
         self.bridge_emitter.clone()
     }
 
-    pub fn metrics(&self) -> CefLaunchMetricsSnapshot {
+    pub fn metrics(&self) -> FenestraLaunchMetricsSnapshot {
         self.metrics.snapshot()
     }
 
@@ -492,7 +516,7 @@ impl CefProcess {
     }
 }
 
-impl Drop for CefProcess {
+impl Drop for FenestraProcess {
     fn drop(&mut self) {
         self.cleanup_sidecars();
         self.stop_desktop_event_forwarder();
@@ -598,10 +622,10 @@ fn platform_event_payload(event: PlatformEvent) -> (&'static str, serde_json::Va
     }
 }
 
-impl CefWindow {
+impl FenestraWindow {
     pub fn new() -> Self {
         Self {
-            config: CefConfig::default(),
+            config: FenestraWindowConfig::default(),
             bridge_handlers: BridgeHandlers::default(),
         }
     }
@@ -739,39 +763,39 @@ impl CefWindow {
 
     pub fn frameless(mut self) -> Self {
         self.config.frameless = true;
-        self.config.chrome = CefWindowChrome::Frameless;
+        self.config.chrome = FenestraWindowChrome::Frameless;
         self
     }
 
     pub fn fenestra_chrome(mut self) -> Self {
         self.config.frameless = true;
-        self.config.chrome = CefWindowChrome::Fenestra;
+        self.config.chrome = FenestraWindowChrome::Fenestra;
         self
     }
 
     pub fn with_frameless(mut self, frameless: bool) -> Self {
         self.config.frameless = frameless;
         self.config.chrome = if frameless {
-            CefWindowChrome::Frameless
+            FenestraWindowChrome::Frameless
         } else {
-            CefWindowChrome::System
+            FenestraWindowChrome::System
         };
         self
     }
 
     pub fn system_chrome(mut self) -> Self {
         self.config.frameless = false;
-        self.config.chrome = CefWindowChrome::System;
+        self.config.chrome = FenestraWindowChrome::System;
         self
     }
 
     pub fn no_chrome(mut self) -> Self {
         self.config.frameless = true;
-        self.config.chrome = CefWindowChrome::None;
+        self.config.chrome = FenestraWindowChrome::None;
         self
     }
 
-    pub fn chrome(mut self, chrome: CefWindowChrome) -> Self {
+    pub fn chrome(mut self, chrome: FenestraWindowChrome) -> Self {
         self.config.frameless = !chrome.uses_native_decorations();
         self.config.chrome = chrome;
         self
@@ -816,7 +840,7 @@ impl CefWindow {
     pub fn shell_surface(mut self, shell_surface: ShellSurfaceOptions) -> Self {
         self.config.shell_surface = Some(shell_surface);
         self.config.frameless = true;
-        self.config.chrome = CefWindowChrome::None;
+        self.config.chrome = FenestraWindowChrome::None;
         self.config.transparent = true;
         self
     }
@@ -852,12 +876,12 @@ impl CefWindow {
 
     pub fn control_region(
         mut self,
-        action: CefWindowControlAction,
+        action: FenestraWindowControlAction,
         rect: WindowRegionRect,
     ) -> Self {
         self.config
             .control_regions
-            .push(CefWindowControlRegion::new(action, rect));
+            .push(FenestraWindowControlRegion::new(action, rect));
         self
     }
 
@@ -902,7 +926,7 @@ impl CefWindow {
         self
     }
 
-    pub fn lifecycle_policy(mut self, lifecycle: CefLifecyclePolicy) -> Self {
+    pub fn lifecycle_policy(mut self, lifecycle: FenestraLifecyclePolicy) -> Self {
         self.config.lifecycle = lifecycle;
         self
     }
@@ -1032,21 +1056,21 @@ impl CefWindow {
         self
     }
 
-    pub fn launch(self) -> CefResult<CefProcess> {
+    pub fn launch(self) -> FenestraResult<FenestraProcess> {
         let runtime = resolve_runtime(&self.config.runtime)?;
         self.launch_with_runtime(runtime)
     }
 
-    pub fn launch_or_install(self) -> CefResult<CefProcess> {
+    pub fn launch_or_install(self) -> FenestraResult<FenestraProcess> {
         let runtime = fenestra_runtime::ensure_runtime(&self.config.runtime)?;
         self.launch_with_runtime(runtime)
     }
 
-    pub fn launch_with_runtime(mut self, runtime: RuntimeInfo) -> CefResult<CefProcess> {
+    pub fn launch_with_runtime(mut self, runtime: RuntimeInfo) -> FenestraResult<FenestraProcess> {
         #[cfg(any(target_os = "android", target_os = "ios"))]
         {
             let _ = runtime;
-            return Err(CefError::MobileSystemWebViewRequired);
+            return Err(FenestraError::MobileSystemWebViewRequired);
         }
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         {
@@ -1063,7 +1087,7 @@ impl CefWindow {
                     self.config.desktop_services.single_instance_id.as_deref(),
                     self.config.desktop_services.single_instance_policy,
                 )
-                .map_err(|message| CefError::CreationFailed { message })?,
+                .map_err(|message| FenestraError::CreationFailed { message })?,
             );
             #[cfg(not(target_os = "linux"))]
             let desktop_services = None;
@@ -1115,7 +1139,7 @@ impl CefWindow {
         }
     }
 
-    fn start_dev_command(&self, metrics: &LaunchMetrics) -> CefResult<Option<Child>> {
+    fn start_dev_command(&self, metrics: &LaunchMetrics) -> FenestraResult<Option<Child>> {
         let Some(command) = &self.config.dev_command else {
             return Ok(None);
         };
@@ -1128,9 +1152,11 @@ impl CefWindow {
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
-        let child = process.spawn().map_err(|error| CefError::CreationFailed {
-            message: format!("failed to start dev command `{command}`: {error}"),
-        })?;
+        let child = process
+            .spawn()
+            .map_err(|error| FenestraError::CreationFailed {
+                message: format!("failed to start dev command `{command}`: {error}"),
+            })?;
         metrics.mark("dev_command.spawned");
         Ok(Some(child))
     }
@@ -1139,7 +1165,7 @@ impl CefWindow {
         &self,
         mut dev_server: Option<&mut Child>,
         url: &str,
-    ) -> CefResult<String> {
+    ) -> FenestraResult<String> {
         let candidates = dev_server_candidates(url);
         if candidates.is_empty() {
             return Ok(url.to_string());
@@ -1149,7 +1175,7 @@ impl CefWindow {
         while Instant::now() < deadline {
             if let Some(child) = dev_server.as_mut() {
                 if let Ok(Some(status)) = child.try_wait() {
-                    return Err(CefError::CreationFailed {
+                    return Err(FenestraError::CreationFailed {
                         message: format!(
                             "dev command exited before `{url}` became available: {status}"
                         ),
@@ -1172,7 +1198,7 @@ impl CefWindow {
             thread::sleep(Duration::from_millis(50));
         }
 
-        Err(CefError::CreationFailed {
+        Err(FenestraError::CreationFailed {
             message: format!(
                 "timed out waiting for dev server `{url}`{}",
                 last_error
@@ -1199,7 +1225,7 @@ impl CefWindow {
             if !self.config.visible {
                 return true;
             }
-            self.config.chrome != CefWindowChrome::System
+            self.config.chrome != FenestraWindowChrome::System
                 || self.config.frameless
                 || self.config.transparent
                 || self.config.effective_background_effect() != WindowBackgroundEffect::None
@@ -1211,7 +1237,7 @@ impl CefWindow {
         }
     }
 
-    fn entry_url(&self) -> CefResult<String> {
+    fn entry_url(&self) -> FenestraResult<String> {
         if let Some(url) = &self.config.dev_url {
             return Ok(url.clone());
         }
@@ -1219,7 +1245,7 @@ impl CefWindow {
             return Ok(url.clone());
         }
         let Some(entry) = &self.config.entry else {
-            return Err(CefError::CreationFailed {
+            return Err(FenestraError::CreationFailed {
                 message: "CEF window has no entry, URL, or dev URL".to_string(),
             });
         };
@@ -1252,7 +1278,7 @@ impl CefWindow {
     }
 }
 
-impl Default for CefWindow {
+impl Default for FenestraWindow {
     fn default() -> Self {
         Self::new()
     }
@@ -1260,20 +1286,22 @@ impl Default for CefWindow {
 
 fn launch_cef_host(
     runtime_dir: &Path,
-    config: &CefConfig,
+    config: &FenestraWindowConfig,
     bridge_handlers: &BridgeHandlers,
     url: &str,
     metrics: LaunchMetrics,
-) -> CefResult<CefProcess> {
+) -> FenestraResult<FenestraProcess> {
     let host_binary = host::ensure_cef_host(runtime_dir)
-        .map_err(|message| CefError::CreationFailed { message })?;
+        .map_err(|message| FenestraError::CreationFailed { message })?;
     metrics.mark("host.ready");
     let mut command = cef_window_command(runtime_dir, &host_binary, config, url)?;
     prepare_bridge_command(&mut command, bridge_handlers);
     prepare_child_command(&mut command);
-    let mut child = command.spawn().map_err(|error| CefError::CreationFailed {
-        message: error.to_string(),
-    })?;
+    let mut child = command
+        .spawn()
+        .map_err(|error| FenestraError::CreationFailed {
+            message: error.to_string(),
+        })?;
     metrics.mark(format!("host.spawned.pid.{}", child.id()));
     let activity = activity::ActivityRegistry::default();
     let bridge_dispatch = spawn_bridge_dispatch(
@@ -1285,7 +1313,7 @@ fn launch_cef_host(
         ),
         activity.clone(),
     );
-    Ok(CefProcess {
+    Ok(FenestraProcess {
         child: ManagedChild::new(child),
         sidecars: Vec::new(),
         bridge_thread: bridge_dispatch.thread,
@@ -1298,7 +1326,7 @@ fn launch_cef_host(
     })
 }
 
-fn metrics_label(config: &CefConfig) -> String {
+fn metrics_label(config: &FenestraWindowConfig) -> String {
     config
         .app_id
         .as_deref()
@@ -1326,12 +1354,12 @@ fn shell_command(command: &str) -> Command {
 fn cef_window_command(
     runtime_dir: &Path,
     host_binary: &Path,
-    config: &CefConfig,
+    config: &FenestraWindowConfig,
     url: &str,
-) -> CefResult<Command> {
+) -> FenestraResult<Command> {
     let release_dir = runtime_dir.join("Release");
     let cache_dir = host::webview_cache_dir(&config.title, url);
-    std::fs::create_dir_all(&cache_dir).map_err(|error| CefError::CreationFailed {
+    std::fs::create_dir_all(&cache_dir).map_err(|error| FenestraError::CreationFailed {
         message: format!("failed to create CEF cache dir: {error}"),
     })?;
 
@@ -1339,7 +1367,6 @@ fn cef_window_command(
     command
         .arg(format!("--url={url}"))
         .arg(format!("--fenestra-title={}", config.title))
-        .arg("--fenestra-ozone-platform=wayland")
         .arg(format!("--fenestra-width={}", config.width.max(1)))
         .arg(format!("--fenestra-height={}", config.height.max(1)))
         .arg(format!(
@@ -1351,12 +1378,29 @@ fn cef_window_command(
             "--cache-path={}",
             cache_dir.join("browser").display()
         ));
+    #[cfg(target_os = "linux")]
+    {
+        command.arg("--fenestra-ozone-platform=wayland");
+    }
     apply_common_cef_args(&mut command);
-    command
-        .current_dir(&release_dir)
-        .env("GDK_BACKEND", "wayland")
-        .env("XDG_SESSION_TYPE", "wayland")
-        .env("LD_LIBRARY_PATH", host::ld_library_path(&release_dir));
+    command.current_dir(&release_dir);
+    #[cfg(target_os = "linux")]
+    {
+        command
+            .env("GDK_BACKEND", "wayland")
+            .env("XDG_SESSION_TYPE", "wayland")
+            .env("LD_LIBRARY_PATH", host::ld_library_path(&release_dir));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let existing = std::env::var("DYLD_FALLBACK_LIBRARY_PATH").unwrap_or_default();
+        let joined = if existing.is_empty() {
+            release_dir.display().to_string()
+        } else {
+            format!("{}:{existing}", release_dir.display())
+        };
+        command.env("DYLD_FALLBACK_LIBRARY_PATH", joined);
+    }
     if config.transparent {
         command
             .arg("--fenestra-transparent")
@@ -1441,6 +1485,7 @@ fn spawn_bridge_dispatch(
     }
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn spawn_native_host_bridge_proxy<F>(child: &mut Child, mut host_control: F)
 where
     F: FnMut(String, String) + Send + 'static,
@@ -1478,6 +1523,7 @@ where
     }
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn parse_host_control(line: &str) -> Option<(&str, &str)> {
     let mut parts = line.splitn(3, '\t');
     if parts.next()? != HOST_CONTROL_PREFIX {
@@ -1486,6 +1532,7 @@ pub(crate) fn parse_host_control(line: &str) -> Option<(&str, &str)> {
     Some((parts.next()?, parts.next().unwrap_or("1")))
 }
 
+#[cfg(target_os = "linux")]
 fn centered_window_position(
     event_loop: &dyn ActiveEventLoop,
     width: u32,
@@ -1581,9 +1628,9 @@ impl std::fmt::Display for BridgeIpcEvent {
     }
 }
 
-fn canonical_entry(entry: &str) -> CefResult<PathBuf> {
+fn canonical_entry(entry: &str) -> FenestraResult<PathBuf> {
     if entry.trim().is_empty() {
-        return Err(CefError::CreationFailed {
+        return Err(FenestraError::CreationFailed {
             message: "CEF entry path is empty".to_string(),
         });
     }
@@ -1592,13 +1639,13 @@ fn canonical_entry(entry: &str) -> CefResult<PathBuf> {
         entry_path
     } else {
         std::env::current_dir()
-            .map_err(|error| CefError::CreationFailed {
+            .map_err(|error| FenestraError::CreationFailed {
                 message: error.to_string(),
             })?
             .join(entry_path)
     };
     path.canonicalize()
-        .map_err(|error| CefError::CreationFailed {
+        .map_err(|error| FenestraError::CreationFailed {
             message: format!("failed to resolve CEF entry: {error}"),
         })
 }
@@ -1767,7 +1814,7 @@ mod tests {
 
     #[test]
     fn hidden_window_lifecycle_is_palette_biased() {
-        let lifecycle = CefLifecyclePolicy::hidden_window();
+        let lifecycle = FenestraLifecyclePolicy::hidden_window();
         assert_eq!(lifecycle.background_frame_rate, 1);
         assert!(lifecycle.suspend_on_blur);
         assert_eq!(lifecycle.hibernate_after, None);
@@ -1776,7 +1823,7 @@ mod tests {
 
     #[test]
     fn memory_saver_hidden_window_hibernates_quickly() {
-        let lifecycle = CefLifecyclePolicy::memory_saver_hidden_window();
+        let lifecycle = FenestraLifecyclePolicy::memory_saver_hidden_window();
         assert_eq!(lifecycle.background_frame_rate, 1);
         assert!(lifecycle.suspend_on_blur);
         assert_eq!(lifecycle.hibernate_after, Some(Duration::from_secs(5)));
@@ -1785,7 +1832,7 @@ mod tests {
 
     #[test]
     fn hidden_builder_uses_hidden_lifecycle_defaults() {
-        let window = CefWindow::new().hidden();
+        let window = FenestraWindow::new().hidden();
         assert!(!window.config.visible);
         assert_eq!(window.config.lifecycle.background_frame_rate, 1);
         assert!(window.config.lifecycle.suspend_on_blur);
@@ -1794,7 +1841,7 @@ mod tests {
 
     #[test]
     fn glass_defaults_to_luca_material() {
-        let window = CefWindow::new().glass();
+        let window = FenestraWindow::new().glass();
         assert!(window.config.transparent);
         assert_eq!(
             window.config.background_effect,
@@ -1804,7 +1851,7 @@ mod tests {
 
     #[test]
     fn glass_material_tracks_low_power_fallback() {
-        let window = CefWindow::new()
+        let window = FenestraWindow::new()
             .glass_material(WindowBackgroundEffect::Niko)
             .glass_low_power_material(WindowBackgroundEffect::Maris);
         assert_eq!(
@@ -1819,7 +1866,7 @@ mod tests {
 
     #[test]
     fn url_sets_production_url_and_bridge_origin() {
-        let window = CefWindow::new().url("https://raday.lantharos.com/dashboard");
+        let window = FenestraWindow::new().url("https://raday.lantharos.com/dashboard");
 
         assert_eq!(
             window.entry_url().unwrap(),
@@ -1838,7 +1885,7 @@ mod tests {
 
     #[test]
     fn dev_url_takes_precedence_over_production_url() {
-        let window = CefWindow::new()
+        let window = FenestraWindow::new()
             .url("https://raday.lantharos.com")
             .dev_url("http://localhost:5173");
 

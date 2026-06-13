@@ -1,5 +1,9 @@
 #include "app.h"
 
+#if defined(OS_WIN) || defined(_WIN32)
+#include <windows.h>
+#endif
+
 #if defined(CEF_X11)
 #include <X11/Xlib.h>
 #endif
@@ -22,9 +26,9 @@ int XIOErrorHandlerImpl(Display* display) {
 }  // namespace
 #endif
 
-NO_STACK_PROTECTOR
-int main(int argc, char* argv[]) {
-  CefMainArgs main_args(argc, argv);
+namespace {
+
+int RunFenestraHost(CefMainArgs main_args, int argc, char* argv[]) {
   CefRefPtr<FenestraApp> app(new FenestraApp);
 
   int exit_code = CefExecuteProcess(main_args, app.get(), nullptr);
@@ -65,3 +69,24 @@ int main(int argc, char* argv[]) {
   CefShutdown();
   return 0;
 }
+
+}  // namespace
+
+#if defined(OS_WIN) || defined(_WIN32)
+int APIENTRY wWinMain(HINSTANCE hInstance,
+                      HINSTANCE hPrevInstance,
+                      LPWSTR lpCmdLine,
+                      int nCmdShow) {
+  (void)hPrevInstance;
+  (void)lpCmdLine;
+  (void)nCmdShow;
+  CefMainArgs main_args(hInstance);
+  return RunFenestraHost(main_args, __argc, __argv);
+}
+#else
+NO_STACK_PROTECTOR
+int main(int argc, char* argv[]) {
+  CefMainArgs main_args(argc, argv);
+  return RunFenestraHost(main_args, argc, argv);
+}
+#endif
