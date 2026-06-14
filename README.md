@@ -33,6 +33,19 @@ Most apps only need `fenestra-cef`. Standalone uses:
 - `fenestra-runtime` — runtime discovery, install, and pruning, without the CEF launcher
 - `fenestra-cli` — the `fenestra` binary (`cargo install fenestra-cli`)
 
+## Examples
+
+The `examples/` directory holds reference apps. They are not published to crates.io, so install them
+from git:
+
+```sh
+# Fenestra CEF reference app
+cargo install --git https://github.com/Misoworks/Fenestra --package fenestra-notes
+
+# Stuk reference app (uses the underlying stuk crates, not Fenestra)
+cargo install --git https://github.com/Misoworks/Stuk --package notes
+```
+
 ## Standalone Windows
 
 Fenestra has three standalone window modes:
@@ -60,26 +73,26 @@ currently supports.
 Run the modes:
 
 ```sh
-cargo run -p fenestra-notes -- --system
-cargo run -p fenestra-notes -- --fenestra-chrome
-cargo run -p fenestra-notes -- --frameless
-cargo run -p fenestra-notes -- --glass
-cargo run -p stuk-notes
+fenestra-notes --system
+fenestra-notes --fenestra-chrome
+fenestra-notes --frameless
+fenestra-notes --glass
+notes
 ```
 
 Create a standalone app:
 
 ```sh
-cargo run -p fenestra-cli --bin fenestra -- new my-notes
+fenestra new my-notes
 ```
 
 Register a source checkout as a local desktop app:
 
 ```sh
-cargo run -p fenestra-cli --bin fenestra -- install
-cargo run -p fenestra-cli --bin fenestra -- install . --autostart
-cargo run -p fenestra-cli --bin fenestra -- update
-cargo run -p fenestra-cli --bin fenestra -- update --all
+fenestra install
+fenestra install . --autostart
+fenestra update
+fenestra update --all
 ```
 
 Source installs are user-local. Fenestra writes launchers and registry records under
@@ -94,11 +107,11 @@ Fenestra can build the web assets, build the Rust desktop host, stage the app, a
 desktop packages:
 
 ```sh
-cargo run -p fenestra-cli --bin fenestra -- bundle . --target portable
-cargo run -p fenestra-cli --bin fenestra -- bundle . --target deb --release
-cargo run -p fenestra-cli --bin fenestra -- bundle . --target appimage
-cargo run -p fenestra-cli --bin fenestra -- bundle . --target dmg --binary target/aarch64-apple-darwin/release/my-app
-cargo run -p fenestra-cli --bin fenestra -- bundle . --target msi --binary target/x86_64-pc-windows-msvc/release/my-app.exe
+fenestra bundle . --target portable
+fenestra bundle . --target deb --release
+fenestra bundle . --target appimage
+fenestra bundle . --target dmg --binary target/aarch64-apple-darwin/release/my-app
+fenestra bundle . --target msi --binary target/x86_64-pc-windows-msvc/release/my-app.exe
 ```
 
 Targets are `portable`, `linux`, `deb`, `rpm`, `appimage`, `windows`, `exe`, `msi`, `macos`, and
@@ -209,7 +222,7 @@ component updates, and background networking disabled.
 Set `FENESTRA_TRACE=1` to print launch and OSR lifecycle timings:
 
 ```sh
-FENESTRA_TRACE=1 cargo run -p fenestra-notes -- --glass
+FENESTRA_TRACE=1 fenestra-notes --glass
 ```
 
 Launched processes also expose a metrics snapshot:
