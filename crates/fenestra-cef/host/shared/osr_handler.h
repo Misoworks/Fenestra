@@ -84,6 +84,13 @@ class FenestraOsrHandler : public CefClient,
                const void* buffer,
                int width,
                int height) override;
+  bool StartDragging(CefRefPtr<CefBrowser> browser,
+                     CefRefPtr<CefDragData> drag_data,
+                     DragOperationsMask allowed_ops,
+                     int x,
+                     int y) override;
+  void UpdateDragCursor(CefRefPtr<CefBrowser> browser,
+                        DragOperation operation) override;
 
   void HandleControlLine(const std::string& line);
   void ResolveBridgeResponse(const std::string& browser_id,

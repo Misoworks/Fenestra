@@ -345,6 +345,10 @@ impl OsrLayerHost {
                 return ReturnData::RequestExit;
             }
             LayerHostEvent::Message(OsrMessage::StartDragRequested) => {}
+            LayerHostEvent::Message(OsrMessage::FileDragRequested(_)) => {
+                // TODO: implement native file drag-out using the layer-shell
+                // DnD protocol or an X11/Wayland data-device backend.
+            }
             LayerHostEvent::Message(OsrMessage::MinimizeRequested) => {}
             LayerHostEvent::Message(OsrMessage::ToggleMaximizeRequested) => {}
             LayerHostEvent::Message(OsrMessage::ShowRequested) => {

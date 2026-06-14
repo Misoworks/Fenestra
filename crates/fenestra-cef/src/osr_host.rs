@@ -647,6 +647,14 @@ impl OsrNativeHost {
                         let _ = window.drag_window();
                     }
                 }
+                OsrHostEvent::Message(OsrMessage::FileDragRequested(_request)) => {
+                    // TODO: implement native file drag-out for OSR windows.
+                    // The host needs to use an X11 DnD or Wayland data-device
+                    // implementation to start a system drag with the file URIs
+                    // so the user can drop files from the app into other apps
+                    // (file managers, editors, desktops, etc.). Until that is
+                    // wired up, file drag-out silently fails in OSR mode.
+                }
                 OsrHostEvent::Message(OsrMessage::MinimizeRequested) => {
                     if self.config.lifecycle.suspend_on_minimize {
                         self.suspend("minimize");

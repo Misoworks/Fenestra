@@ -35,6 +35,7 @@ const KIND_MAIN_BATCH: u32 = 12;
 const KIND_POPUP_BATCH: u32 = 13;
 const KIND_MAIN_SHARED_BATCH: u32 = 14;
 const KIND_POPUP_SHARED_BATCH: u32 = 15;
+const KIND_FILE_DRAG_REQUESTED: u32 = 16;
 const BATCH_ENTRY_LEN: usize = 28;
 
 pub(crate) const MAIN_TEXTURE_ID: &str = "__stuk_fenestra_main";
@@ -53,6 +54,15 @@ pub(crate) enum OsrMessage {
     ShowRequested,
     HideRequested,
     FocusRequested,
+    FileDragRequested(FileDragRequest),
+}
+
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub(crate) struct FileDragRequest {
+    pub paths: Vec<String>,
+    pub x: i32,
+    pub y: i32,
 }
 
 #[derive(Clone, Debug)]
@@ -164,6 +174,18 @@ pub(crate) fn read_message(reader: &mut UnixStream) -> io::Result<Option<OsrMess
         KIND_FOCUS_REQUESTED => {
             close_optional_fd(fd);
             OsrMessage::FocusRequested
+        }
+        KIND_FILE_DRAG_REQUESTED => {
+            close_optional_fd(fd);
+            match parse_file_drag_request(&payload, x, y) {
+                Some(request) => OsrMessage::FileDragRequested(request),
+                None => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "invalid file drag request payload",
+                    ));
+                }
+            }
         }
         _ => {
             close_optional_fd(fd);
@@ -319,6 +341,20 @@ fn parse_paint_batch(
         y,
         frames,
     })
+}
+
+fn parse_file_drag_request(payload: &[u8], x: i32, y: i32) -> Option<FileDragRequest> {
+    let value: Value = serde_json::from_slice(payload).ok()?;
+    let paths = value
+        .get("paths")?
+        .as_array()?
+        .iter()
+        .filter_map(|item| item.as_str().map(String::from))
+        .collect::<Vec<_>>();
+    if paths.is_empty() {
+        return None;
+    }
+    Some(FileDragRequest { paths, x, y })
 }
 
 fn payload_count(payload: &[u8]) -> io::Result<usize> {

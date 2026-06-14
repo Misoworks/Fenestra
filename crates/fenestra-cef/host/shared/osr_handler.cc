@@ -37,6 +37,7 @@ constexpr uint32_t kMainBatch = 12;
 constexpr uint32_t kPopupBatch = 13;
 constexpr uint32_t kMainSharedBatch = 14;
 constexpr uint32_t kPopupSharedBatch = 15;
+constexpr uint32_t kFileDragRequested = 16;
 constexpr size_t kSharedPaintThreshold = 256 * 1024;
 constexpr size_t kBatchEntryLen = 28;
 #ifndef MFD_CLOEXEC
@@ -997,6 +998,154 @@ void FenestraOsrHandler::OnPaint(CefRefPtr<CefBrowser> browser,
   const int32_t x = type == PET_POPUP ? popup_rect_.x : 0;
   const int32_t y = type == PET_POPUP ? popup_rect_.y : 0;
   SendPaintBatch(kind, x, y, buffer, width, height, dirtyRects);
+}
+
+namespace {
+
+std::string JsonEscape(const std::string& value) {
+  std::string output;
+  output.reserve(value.size() + 2);
+  for (char c : value) {
+    switch (c) {
+      case '\\':
+        output += "\\\\";
+        break;
+      case '"':
+        output += "\\\"";
+        break;
+      case '\n':
+        output += "\\n";
+        break;
+      case '\r':
+        output += "\\r";
+        break;
+      case '\t':
+        output += "\\t";
+        break;
+      default:
+        if (static_cast<unsigned char>(c) < 0x20) {
+          char buffer[8];
+          std::snprintf(buffer, sizeof(buffer), "\\u%04x", static_cast<unsigned char>(c));
+          output += buffer;
+        } else {
+          output += c;
+        }
+        break;
+    }
+  }
+  return output;
+}
+
+std::string FileUriToPath(const std::string& value) {
+  const std::string prefix = "file://";
+  if (value.rfind(prefix, 0) != 0) {
+    return value;
+  }
+  std::string path = value.substr(prefix.size());
+  const std::string host_prefix = "localhost/";
+  if (path.rfind(host_prefix, 0) == 0) {
+    path = path.substr(host_prefix.size());
+  }
+  std::string decoded;
+  decoded.reserve(path.size());
+  for (size_t i = 0; i < path.size(); ++i) {
+    if (path[i] == '%' && i + 2 < path.size()) {
+      char hex[3] = {path[i + 1], path[i + 2], 0};
+      char* end = nullptr;
+      const long byte = std::strtol(hex, &end, 16);
+      if (end == hex + 2) {
+        decoded.push_back(static_cast<char>(byte));
+        i += 2;
+        continue;
+      }
+    }
+    decoded.push_back(path[i] == '?' || path[i] == '#' ? '\0' : path[i]);
+  }
+  return decoded;
+}
+
+std::string BuildFileDragPayload(const std::vector<std::string>& paths) {
+  std::string output = "{\"paths\":[";
+  bool first = true;
+  for (const auto& path : paths) {
+    if (!first) {
+      output += ",";
+    }
+    first = false;
+    output += '"';
+    output += JsonEscape(path);
+    output += '"';
+  }
+  output += "]}";
+  return output;
+}
+
+}  // namespace
+
+bool FenestraOsrHandler::StartDragging(CefRefPtr<CefBrowser> browser,
+                                   CefRefPtr<CefDragData> drag_data,
+                                   DragOperationsMask allowed_ops,
+                                   int x,
+                                   int y) {
+  CEF_REQUIRE_UI_THREAD();
+  if (!browser || !drag_data || socket_fd_ < 0) {
+    return false;
+  }
+
+  std::vector<std::string> paths;
+
+  if (drag_data->IsFile()) {
+    std::vector<CefString> file_paths;
+    if (drag_data->GetFilePaths(file_paths) && !file_paths.empty()) {
+      for (const auto& file_path : file_paths) {
+        paths.push_back(FileUriToPath(file_path.ToString()));
+      }
+    }
+    if (paths.empty()) {
+      const std::string file_name = drag_data->GetFileName().ToString();
+      if (!file_name.empty()) {
+        paths.push_back(FileUriToPath(file_name));
+      }
+    }
+  }
+
+  if (paths.empty()) {
+    const std::string fragment_text = drag_data->GetFragmentText().ToString();
+    const std::string link_url = drag_data->GetLinkURL().ToString();
+    std::stringstream stream;
+    if (!fragment_text.empty()) {
+      stream << fragment_text;
+    } else if (!link_url.empty()) {
+      stream << link_url;
+    }
+    std::string line;
+    while (std::getline(stream, line)) {
+      std::string trimmed = line;
+      while (!trimmed.empty() && (trimmed.back() == '\r' || trimmed.back() == '\n')) {
+        trimmed.pop_back();
+      }
+      if (trimmed.empty()) continue;
+      paths.push_back(FileUriToPath(trimmed));
+    }
+  }
+
+  if (paths.empty()) {
+    return false;
+  }
+
+  const std::string payload = BuildFileDragPayload(paths);
+  SendMessage(kFileDragRequested, 0, 0, x, y, payload.data(),
+              static_cast<uint32_t>(payload.size()));
+
+  // Until a native X11/Wayland DnD backend is wired up in the host, the
+  // request is reported but no system drag is started. Return false so CEF
+  // doesn't keep waiting for DragSource*Ended callbacks.
+  return false;
+}
+
+void FenestraOsrHandler::UpdateDragCursor(CefRefPtr<CefBrowser> browser,
+                                      DragOperation operation) {
+  // No-op: cursor changes are driven by the host's window manager.
 }
 
 void FenestraOsrHandler::HandleControlLine(const std::string& line) {

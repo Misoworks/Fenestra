@@ -308,26 +308,42 @@ command surface.
 
 The three public Fenestra crates ship from this repo: `fenestra-runtime`, `fenestra-cli`, and
 `fenestra-cef`. They depend on four upstream stuk crates (`stuk-platform`, `stuk-platform-shell`,
-`stuk-render`, `stuk-style`) that ship from the sibling [stuk](https://github.com/Misoworks/stuk)
+`stuk-render`, `stuk-style`) that ship from the sibling [stuk](https://github.com/Misoworks/Stuk)
 repo.
 
-Publish in this order:
+Releases run automatically through GitHub Actions and crates.io
+[trusted publishing](https://crates.io/docs/trusted-publishing). Push a tag and
+[`.github/workflows/publish.yml`](.github/workflows/publish.yml) exchanges a short-lived OIDC token
+for a crates.io API token, then publishes every crate in dependency order. Publish stuk first, then
+fenestra:
 
 ```sh
-# 1. From the stuk repo, publish the four upstream crates (and their helpers).
+# 1. From the stuk repo: bump workspace.package.version, then
 cd ../stuk
-scripts/publish.sh --dry-run    # sanity check
-scripts/publish.sh              # actual publish
+git tag v0.1.1 && git push --tags
 
-# 2. From this repo, publish the three fenestra crates.
+# 2. After stuk crates land on crates.io, from this repo:
 cd ../fenestra
-scripts/publish.sh --dry-run
-scripts/publish.sh
+git tag v0.1.1 && git push --tags
 ```
 
-`scripts/publish.sh` publishes in dependency order and waits between crates so the crates.io index
-can refresh. Tag the repo (`git tag v0.1.0 && git push --tags`) after a successful publish so users
-can pin git deps to a known release.
+For the very first publish of a crate (or for local testing) use the script directly:
+
+```sh
+cargo login <CRATES_IO_TOKEN>
+
+# from stuk first
+cd ../stuk && scripts/publish.sh
+
+# then fenestra (use --package-only if upstream stuk crates are not yet on crates.io)
+cd ../fenestra && scripts/publish.sh
+```
+
+After the first manual publish, configure a trusted publisher on crates.io for each crate
+(`Misoworks` / `Fenestra` / `publish.yml` / environment `release`) so the workflow can take over.
+
+Tag the repo (`git tag v0.1.0 && git push --tags`) after a successful publish so users can pin git
+deps to a known release.
 
 ## License
 
