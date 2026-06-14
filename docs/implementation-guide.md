@@ -2,7 +2,8 @@
 
 Fenestra is the shared web runtime manager and embedded CEF webview system. Use it when an app wants
 HTML/CSS/JS UI with a Rust host, local runtime resolution, native desktop services, and a strict
-bridge. Stuk integration lives in `stuk-fenestra`; the Fenestra crates do not depend on Stuk.
+bridge. Fenestra does not depend on Stuk; Stuk apps wire into Fenestra via `FenestraWindow` from
+`fenestra-cef`.
 
 ## Crate Map
 
@@ -11,7 +12,6 @@ bridge. Stuk integration lives in `stuk-fenestra`; the Fenestra crates do not de
 | `fenestra-runtime` | CEF runtime discovery, user-local installs, package metadata, pruning, and validation |
 | `fenestra-cef` | CEF window launch, OSR native host, bridge dispatch, lifecycle, activity leases, desktop services |
 | `fenestra-cli` | `fenestra new`, source installs, runtime commands, and bundle staging |
-| `stuk-fenestra` | Adapter from Stuk apps to Fenestra webview windows and widgets |
 
 Runtime files are user-local by default:
 

@@ -25,7 +25,7 @@ Or pin to the git repo (useful during development or when you want the very late
 
 ```toml
 [dependencies]
-fenestra-cef = { git = "https://github.com/Lantharos/Fenestra", branch = "main" }
+fenestra-cef = { git = "https://github.com/Misoworks/Fenestra", branch = "main" }
 ```
 
 Most apps only need `fenestra-cef`. Standalone uses:
@@ -308,7 +308,7 @@ command surface.
 
 The three public Fenestra crates ship from this repo: `fenestra-runtime`, `fenestra-cli`, and
 `fenestra-cef`. They depend on four upstream stuk crates (`stuk-platform`, `stuk-platform-shell`,
-`stuk-render`, `stuk-style`) that ship from the sibling [stuk](https://github.com/Lantharos/stuk)
+`stuk-render`, `stuk-style`) that ship from the sibling [stuk](https://github.com/Misoworks/stuk)
 repo.
 
 Publish in this order:
