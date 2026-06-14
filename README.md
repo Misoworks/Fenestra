@@ -12,9 +12,86 @@ For a practical map of the crates, window modes, bridge, activity leases, lifecy
 services, dev workflow, and bundling, see
 [`docs/implementation-guide.md`](docs/implementation-guide.md).
 
+## Prerequisites
+
+Fenestra is CEF on every supported platform; the public API is `FenestraWindow`
+because the runtime is meant to be an implementation detail. You need a Rust
+toolchain plus the C/C++ build chain the embedded CEF host compiles with, and
+the optional packaging tools you actually want to invoke.
+
+**All platforms**
+
+- Rust 1.89 or newer (`rustup default stable`)
+- `cmake` ≥ 3.21 and a C++20 compiler
+  - Linux: `gcc` / `clang`, plus `ninja` (preferred)
+  - Windows: MSVC (`x86_64-pc-windows-msvc`)
+  - macOS: Xcode command-line tools
+- A CEF binary distribution for the host OS/arch — pulled automatically by
+  `fenestra runtime install cef` from `https://cef-builds.spotifycdn.com/index.json`
+- `curl` (or `wget`), `tar`, and `sha1sum` (Linux) / `shasum` (macOS) — used
+  to fetch, extract, and verify the CEF archive
+
+**JavaScript**
+
+`fenestra` auto-detects the web build from `ui/`, `frontend/`, `web/`, or
+`package.json`. [Bun](https://bun.sh) is preferred when a `bun.lock*`,
+`packageManager = "bun@..."`, or any other lockfile is present; otherwise it
+falls back to `pnpm`, `yarn`, or `npm`.
+
+**Linux desktop integration (optional, recommended)**
+
+For tray icons, XDG portal global shortcuts, deep-link MIME defaults, autostart
+`.desktop` files, and the status-notifier icon to actually appear:
+
+```sh
+# Debian / Ubuntu
+sudo apt install libgtk-3-bin desktop-file-utils
+
+# Fedora
+sudo dnf install gtk-update-icon-cache desktop-file-utils
+
+# Arch
+sudo pacman -S gtk3 desktop-file-utils
+```
+
+`fenestra install` calls `update-desktop-database` and `gtk-update-icon-cache`
+if they are on `PATH`; the install still completes without them.
+
+**Linux packaging tools (optional)**
+
+```sh
+# .deb — Debian / Ubuntu
+sudo apt install dpkg          # provides dpkg-deb
+
+# .rpm — Fedora / RHEL
+sudo dnf install rpm-build
+
+# AppImage — download appimagetool from
+#   https://github.com/AppImageCommunity/appimagetool
+#   and put it on $PATH
+```
+
+`fenestra bundle --target rpm` does not shell out to `rpmbuild` itself; it
+writes a spec and a `build-rpm.sh` script that you run on a host with the RPM
+toolchain installed.
+
+**macOS packaging (optional)**
+
+`hdiutil` ships with macOS and is used for `.dmg`. Nothing extra to install.
+
+**Windows packaging (optional)**
+
+- `.msi` — [WiX v4](https://wixtoolset.org/) (`wix` on `PATH`)
+- `.exe` — [NSIS](https://nsis.sourceforge.io/) (`makensis` on `PATH`)
+
+Code signing, notarization, and installer signing are not part of the CLI;
+they still need the relevant platform credentials.
+
 ## Install
 
-From crates.io:
+### Library
+
+Add Fenestra to your app's `Cargo.toml`:
 
 ```toml
 [dependencies]
@@ -31,7 +108,90 @@ fenestra-cef = { git = "https://github.com/Misoworks/Fenestra", branch = "main" 
 Most apps only need `fenestra-cef`. Standalone uses:
 
 - `fenestra-runtime` — runtime discovery, install, and pruning, without the CEF launcher
-- `fenestra-cli` — the `fenestra` binary (`cargo install fenestra-cli`)
+- `fenestra-cli` — the `fenestra` binary
+
+### CLI
+
+Install the `fenestra` binary globally with `cargo`:
+
+```sh
+cargo install fenestra-cli
+```
+
+Or from the git repo:
+
+```sh
+cargo install --git https://github.com/Misoworks/Fenestra --package fenestra-cli
+```
+
+After install, `fenestra --help` lists every subcommand. The current surface:
+
+| Command | What it does |
+| --- | --- |
+| `fenestra new <NAME> [--template notes]` | Scaffold a new app from a built-in template (only `notes` today) |
+| `fenestra install [SOURCE] [--autostart]` | Register the current source checkout as a local desktop app; writes `~/.local/share/fenestra/apps/<id>/` plus a `.desktop` file under `~/.local/share/applications/`. `--autostart` also writes `~/.config/autostart/<id>.desktop` |
+| `fenestra update [TARGET] [--all]` | Rebuild web assets, re-stage the app, and refresh launcher metadata for a previously installed source checkout |
+| `fenestra bundle [SOURCE] --target <T>` | Stage the app and (when the right tool is on `PATH`) produce a package. Targets: `portable`, `linux`, `deb`, `rpm`, `appimage`, `windows`, `exe`, `msi`, `macos`, `dmg` |
+| `fenestra runtime list` | Show installed CEF runtimes under `~/.local/share/fenestra/runtimes/cef/` |
+| `fenestra runtime install cef [--package minimal\|client\|standard]` | Download and unpack a CEF build for the host platform |
+| `fenestra runtime remove cef [VERSION] [--package ...]` | Remove a specific CEF version |
+| `fenestra runtime prune cef --keep N` | Keep only the N most recent CEF versions |
+| `fenestra runtime doctor` | Check that the CEF runtime, CMake toolchain, and shell-out deps are usable |
+
+The CLI shell-outs to `cargo`, `bun` / `pnpm` / `yarn` / `npm`, `tar`,
+`dpkg-deb`, `appimagetool`, `hdiutil`, `wix`, and `makensis`. When the tool for
+a target is missing, `fenestra bundle` still completes the staged tree and
+writes a `build-<target>.sh` script so the package can be finished later on a
+host that has the tool.
+
+## Platforms
+
+Fenestra is CEF on every platform — Linux, Windows, and macOS all use the same
+embedded Chromium. There is no WebView2, WKWebView, or platform-native
+webview fallback; the public type is named `FenestraWindow` rather than
+`CefWindow` because the engine is meant to be an implementation detail that
+apps build against, not a brand they ship with.
+
+### What runs on each OS
+
+- **Linux** — two internal host modes, both CEF:
+  - **OSR (off-screen rendering) host** — used for frameless, transparent, and
+    glass windows, and for everything that needs to draw into a Wayland
+    layer-shell surface. The Rust side picks this automatically via
+    `FenestraWindow::should_use_osr_host` (`crates/fenestra-cef/src/lib.rs:1211-1238`).
+  - **Windowed CEF host** — used for `system_chrome()` and other
+    system-decorated compatibility windows. Force it explicitly with
+    `FENESTRA_CEF_BACKEND=windowed` if you want a top-level CEF window on
+    Linux.
+  - Wayland is preferred. `fenestra-cef` passes `--ozone-platform=wayland`,
+    sets `GDK_BACKEND=wayland` and `XDG_SESSION_TYPE=wayland`, and exports
+    `LD_LIBRARY_PATH` for the CEF release dir.
+  - Linux-only desktop services: `ksni` StatusNotifier tray icons, `ashpd` XDG
+    desktop portal global shortcuts, `layershellev` layer-shell surfaces,
+    `.desktop` autostart, `x-scheme-handler` deep-link MIME registration,
+    Chromium / Firefox native-messaging manifests, and single-instance
+    routing through a `UnixListener` in `$XDG_RUNTIME_DIR`.
+  - Tray, global-shortcut, and second-instance events are forwarded into the
+    web bridge as `window.fenestra.bridge.listen("tray.activate" | "globalShortcut.activate" | "singleInstance.activate", ...)`.
+- **Windows** — windowed CEF host, MSVC toolchain. The dev-server helper uses
+  `cmd /C` for the build. The `desktop_services` module is gated to Linux, so
+  tray / autostart / global shortcuts / deep links on Windows come from the
+  upstream `stuk-platform` crate rather than `fenestra-cef`.
+- **macOS** — windowed CEF host, Xcode command-line tools. `DYLD_FALLBACK_LIBRARY_PATH`
+  points at the CEF `Release` dir. As on Windows, desktop services on macOS
+  are provided by upstream `stuk-platform`.
+- **Mobile** — `FenestraWindow::launch_or_install` returns
+  `FenestraError::MobileSystemWebViewRequired` on Android and iOS; mobile
+  targets are expected to use the OS webview directly.
+
+### Forcing a specific CEF host on Linux
+
+```sh
+FENESTRA_CEF_BACKEND=windowed fenestra-notes --system
+```
+
+Accepted values: `osr` (default for frameless / glass), `windowed` /
+`cef-windowed` / `system-window` (top-level CEF window).
 
 ## Examples
 
