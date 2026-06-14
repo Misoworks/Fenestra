@@ -4,9 +4,7 @@ members = [
     "crates/fenestra-runtime",
     "crates/fenestra-cef",
     "crates/fenestra-cli",
-    "crates/stuk-fenestra",
     "examples/fenestra-notes",
-    "examples/stuk-notes",
 ]
 default-members = [
     "crates/fenestra-runtime",
@@ -16,20 +14,24 @@ default-members = [
 ]
 
 [workspace.package]
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/Lantharos/fenestra"
+homepage = "https://github.com/Lantharos/fenestra"
+authors = ["The Fenestra Authors"]
+keywords = ["fenestra", "cef", "webview", "desktop", "chromium"]
+categories = ["gui", "rendering"]
 
 [workspace.dependencies]
-fenestra-runtime = { path = "crates/fenestra-runtime" }
-fenestra-cef = { path = "crates/fenestra-cef" }
-stuk-fenestra = { path = "crates/stuk-fenestra" }
+fenestra-runtime = { path = "crates/fenestra-runtime", version = "0.1.0" }
+fenestra-cef = { path = "crates/fenestra-cef", version = "0.1.0" }
 
-stuk = { path = "../stuk/crates/stuk" }
-stuk-platform = { path = "../stuk/crates/stuk-platform" }
-stuk-platform-shell = { path = "../stuk/crates/stuk-platform-shell" }
-stuk-render = { path = "../stuk/crates/stuk-render" }
-stuk-style = { path = "../stuk/crates/stuk-style" }
+stuk-platform = { path = "../stuk/crates/stuk-platform", version = "0.1.0" }
+stuk-platform-shell = { path = "../stuk/crates/stuk-platform-shell", version = "0.1.0" }
+stuk-render = { path = "../stuk/crates/stuk-render", version = "0.1.0" }
+stuk-style = { path = "../stuk/crates/stuk-style", version = "0.1.0" }
 
 ashpd = { version = "0.13.11", features = ["global_shortcuts"] }
 futures-util = "0.3.31"

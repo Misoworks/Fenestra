@@ -1,9 +1,16 @@
 [package]
 name = "fenestra-cli"
-version = "0.1.0"
+description = "Fenestra CLI: runtime install, app templates, source installs, and bundle staging"
+keywords = ["fenestra", "cef", "cli", "bundle", "desktop"]
+categories = ["command-line-utilities", "development-tools"]
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
 
 [[bin]]
 name = "fenestra"

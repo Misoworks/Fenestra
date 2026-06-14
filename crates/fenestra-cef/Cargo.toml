@@ -1,10 +1,23 @@
 [package]
 name = "fenestra-cef"
-version = "0.1.0"
+description = "CEF (Chromium Embedded Framework) backend for Fenestra cross-platform webview windows"
+keywords = ["fenestra", "cef", "chromium", "webview", "desktop"]
+categories = ["gui", "rendering", "web-programming"]
+include = [
+    "src/**/*",
+    "host/shared/**/*",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+]
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "CEF backend for Fenestra webview windows"
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
 
 [dependencies]
 fenestra-runtime.workspace = true

@@ -1,10 +1,16 @@
 [package]
 name = "fenestra-runtime"
-version = "0.1.0"
+description = "Shared web runtime detection, installation, validation, and pruning for Fenestra (Chromium Embedded Framework)"
+keywords = ["fenestra", "cef", "chromium", "runtime", "webview"]
+categories = ["gui", "web-programming"]
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Shared web runtime detection, installation, and management for Fenestra"
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
 
 [dependencies]
 serde.workspace = true

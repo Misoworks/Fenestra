@@ -2,9 +2,6 @@
 
 Fenestra owns shared web runtime management and embedded webview backends.
 
-Stuk remains the native app framework. `stuk-fenestra` is the adapter crate that lets Stuk apps use
-Fenestra windows and hybrid webview surfaces without making Stuk depend on CEF or runtime downloads.
-
 Runtime files live under:
 
 ```txt
@@ -14,6 +11,27 @@ Runtime files live under:
 For a practical map of the crates, window modes, bridge, activity leases, lifecycle, desktop
 services, dev workflow, and bundling, see
 [`docs/implementation-guide.md`](docs/implementation-guide.md).
+
+## Install
+
+From crates.io:
+
+```toml
+[dependencies]
+fenestra-cef = "0.1"
+```
+
+Or pin to the git repo (useful during development or when you want the very latest):
+
+```toml
+[dependencies]
+fenestra-cef = { git = "https://github.com/Lantharos/Fenestra", branch = "main" }
+```
+
+Most apps only need `fenestra-cef`. Standalone uses:
+
+- `fenestra-runtime` — runtime discovery, install, and pruning, without the CEF launcher
+- `fenestra-cli` — the `fenestra` binary (`cargo install fenestra-cli`)
 
 ## Standalone Windows
 
@@ -285,6 +303,31 @@ window.fenestra.window.hide();
 
 These calls are host controls, not bridge commands, so they work even when the app exposes no native
 command surface.
+
+## Publishing
+
+The three public Fenestra crates ship from this repo: `fenestra-runtime`, `fenestra-cli`, and
+`fenestra-cef`. They depend on four upstream stuk crates (`stuk-platform`, `stuk-platform-shell`,
+`stuk-render`, `stuk-style`) that ship from the sibling [stuk](https://github.com/Lantharos/stuk)
+repo.
+
+Publish in this order:
+
+```sh
+# 1. From the stuk repo, publish the four upstream crates (and their helpers).
+cd ../stuk
+scripts/publish.sh --dry-run    # sanity check
+scripts/publish.sh              # actual publish
+
+# 2. From this repo, publish the three fenestra crates.
+cd ../fenestra
+scripts/publish.sh --dry-run
+scripts/publish.sh
+```
+
+`scripts/publish.sh` publishes in dependency order and waits between crates so the crates.io index
+can refresh. Tag the repo (`git tag v0.1.0 && git push --tags`) after a successful publish so users
+can pin git deps to a known release.
 
 ## License
 
