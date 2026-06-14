@@ -101,7 +101,10 @@ publish_crate() {
     #   Jun 2026 14:59:56 GMT and see...
     if [[ "$out" == *"status 429"* ]]; then
       local when
-      when=$(printf '%s' "$out" | grep -oP 'try again after \K[^.]+' | head -1 | sed 's/[[:space:]]*$//')
+      # Match the exact RFC 2822 timestamp in the message so we don't pick up
+      # any trailing sentence ("and see ..."). Format: "Sun, 14 Jun 2026
+      # 14:59:56 GMT".
+      when=$(printf '%s' "$out" | grep -oP 'try again after \K[A-Z][a-z]{2}, \d{1,2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT' | head -1)
       if [[ -n "$when" ]]; then
         local epoch now wait wait_min wait_sec
         epoch=$(date -d "$when" +%s 2>/dev/null || echo "")
@@ -116,9 +119,10 @@ publish_crate() {
             continue
           fi
         fi
+        echo "parsed 429 timestamp '$when' but epoch was empty; backing off 60s"
+      else
+        echo "429 received but no parseable timestamp; backing off 60s"
       fi
-      # 429 but couldn't parse the wait time — back off and retry.
-      echo "rate limited; backing off 60s before retry..."
       sleep 60
       continue
     fi
