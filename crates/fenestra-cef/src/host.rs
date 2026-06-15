@@ -167,15 +167,14 @@ fn bridge_js_header() -> String {
          #pragma once\n\
          constexpr const char* FENESTRA_BRIDGE_JS_RAW = R\"js(",
     );
+    // The content is embedded in a C++ raw string literal, so escape
+    // sequences are NOT interpreted. We must NOT escape newlines/tabs/etc.
+    // as `\\n`/`\\t` here, otherwise the generated JS source would contain
+    // those as literal two-character sequences outside of any string and
+    // V8 would fail to parse the script. The only sequence that actually
+    // needs to be guarded against is the raw string terminator `)js"`.
     for byte in INSTALL_SCRIPT.as_bytes() {
-        match byte {
-            b'\\' => output.push_str("\\\\"),
-            b'"' => output.push_str("\\\""),
-            b'\n' => output.push_str("\\n"),
-            b'\r' => output.push_str("\\r"),
-            b'\t' => output.push_str("\\t"),
-            _ => output.push(*byte as char),
-        }
+        output.push(*byte as char);
     }
     output.push_str(")js\";\n");
     output
