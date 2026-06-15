@@ -5,11 +5,11 @@ use std::{
 
 use serde_json::{Value, json};
 
-use crate::{BridgeCommand, BridgeError, BridgeResponse, BridgeResult};
+use crate::bridge::{BridgeCommand, BridgeError, BridgeResponse, BridgeResult};
 
-pub(crate) const BEGIN_COMMAND: &str = "fenestra.activity.begin";
-pub(crate) const END_COMMAND: &str = "fenestra.activity.end";
-pub(crate) const LIST_COMMAND: &str = "fenestra.activity.list";
+pub const BEGIN_COMMAND: &str = "fenestra.activity.begin";
+pub const END_COMMAND: &str = "fenestra.activity.end";
+pub const LIST_COMMAND: &str = "fenestra.activity.list";
 
 const INTERNAL_COMMANDS: [&str; 3] = [BEGIN_COMMAND, END_COMMAND, LIST_COMMAND];
 
@@ -41,13 +41,13 @@ pub struct ActivityRecord {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ActivityRegistry {
+pub struct ActivityRegistry {
     inner: Arc<Mutex<ActivityState>>,
 }
 
 pub struct FenestraActivityLease {
     registry: ActivityRegistry,
-    emitter: Option<crate::BridgeEventEmitter>,
+    emitter: Option<Arc<dyn crate::ActivityEventEmitter>>,
     record: Option<ActivityRecord>,
 }
 
@@ -58,13 +58,13 @@ struct ActivityState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ActivityHostUpdate {
+pub enum ActivityHostUpdate {
     Begin(ActivityRecord),
     End(ActivityRecord),
 }
 
 impl ActivityRegistry {
-    pub(crate) fn begin(&self, options: ActivityOptions) -> ActivityRecord {
+    pub fn begin(&self, options: ActivityOptions) -> ActivityRecord {
         let mut state = self.inner.lock().expect("activity registry poisoned");
         state.next_id += 1;
         let record = ActivityRecord {
@@ -76,7 +76,7 @@ impl ActivityRegistry {
         record
     }
 
-    pub(crate) fn end(&self, id: &str) -> Option<ActivityRecord> {
+    pub fn end(&self, id: &str) -> Option<ActivityRecord> {
         self.inner
             .lock()
             .expect("activity registry poisoned")
@@ -84,7 +84,7 @@ impl ActivityRegistry {
             .remove(id)
     }
 
-    pub(crate) fn list(&self) -> Vec<ActivityRecord> {
+    pub fn list(&self) -> Vec<ActivityRecord> {
         self.inner
             .lock()
             .expect("activity registry poisoned")
@@ -94,7 +94,7 @@ impl ActivityRegistry {
             .collect()
     }
 
-    pub(crate) fn dispatch_bridge_command(
+    pub fn dispatch_bridge_command(
         &self,
         command: &BridgeCommand,
     ) -> Option<(BridgeResult, Option<ActivityHostUpdate>)> {
@@ -106,10 +106,10 @@ impl ActivityRegistry {
         }
     }
 
-    pub(crate) fn lease(
+    pub fn lease(
         &self,
         options: ActivityOptions,
-        emitter: Option<crate::BridgeEventEmitter>,
+        emitter: Option<Arc<dyn crate::ActivityEventEmitter>>,
     ) -> FenestraActivityLease {
         let record = self.begin(options);
         if let Some(emitter) = &emitter {
@@ -209,7 +209,7 @@ impl Drop for FenestraActivityLease {
     }
 }
 
-pub(crate) fn bridge_commands_with_internal(commands: Vec<String>) -> Vec<String> {
+pub fn bridge_commands_with_internal(commands: Vec<String>) -> Vec<String> {
     let mut commands = commands;
     for command in INTERNAL_COMMANDS {
         if !commands.iter().any(|existing| existing == command) {
@@ -219,7 +219,7 @@ pub(crate) fn bridge_commands_with_internal(commands: Vec<String>) -> Vec<String
     commands
 }
 
-pub(crate) fn host_update_json(update: &ActivityHostUpdate) -> Value {
+pub fn host_update_json(update: &ActivityHostUpdate) -> Value {
     match update {
         ActivityHostUpdate::Begin(record) => json!({
             "id": record.id,
@@ -234,6 +234,13 @@ pub(crate) fn host_update_json(update: &ActivityHostUpdate) -> Value {
             "active": false,
         }),
     }
+}
+
+/// Engine-neutral activity event emitter. Each backend (CEF / WebView2)
+/// provides a concrete implementation of this trait that knows how to push
+/// `fenestra.activity.begin` / `fenestra.activity.end` events to the page.
+pub trait ActivityEventEmitter: Send + Sync {
+    fn emit_activity_update(&self, update: &ActivityHostUpdate) -> bool;
 }
 
 fn bool_param(value: &Value, key: &str) -> Option<bool> {
@@ -259,6 +266,16 @@ fn record_json(record: &ActivityRecord) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingEmitter(Arc<AtomicUsize>);
+
+    impl ActivityEventEmitter for CountingEmitter {
+        fn emit_activity_update(&self, _update: &ActivityHostUpdate) -> bool {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            true
+        }
+    }
 
     fn command(name: &str, params: Value) -> BridgeCommand {
         BridgeCommand {
@@ -302,5 +319,16 @@ mod tests {
         assert_eq!(response.expect("activity response").result["ended"], true);
         assert!(matches!(update, Some(ActivityHostUpdate::End(_))));
         assert!(registry.list().is_empty());
+    }
+
+    #[test]
+    fn lease_emits_begin_and_end() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let emitter: Arc<dyn ActivityEventEmitter> = Arc::new(CountingEmitter(counter.clone()));
+        let registry = ActivityRegistry::default();
+        let lease = registry.lease(ActivityOptions::new("job"), Some(emitter));
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        lease.end();
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
     }
 }

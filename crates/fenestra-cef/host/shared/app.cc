@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "fenestra_bridge_js.h"
 #include "handler.h"
 #include "include/cef_browser.h"
 #include "include/cef_command_line.h"
@@ -91,40 +92,14 @@ std::string JsArray(const std::vector<std::string>& values) {
 }
 
 std::string BridgeInstallScript(const std::vector<std::string>& commands) {
-  return "(function(){"
-         "if(window.fenestra&&window.fenestra.bridge&&window.fenestra.bridge.__native)return;"
-         "const commands=new Set(" +
-         JsArray(commands) +
-         ");"
-         "const pending=new Map();const listeners=new Map();let nextId=1;"
-         "window.__fenestraBridgeResolve=function(id,ok,payload){"
-         "const entry=pending.get(String(id));if(!entry)return;"
-         "pending.delete(String(id));"
-         "if(ok){entry.resolve(payload);}else{entry.reject(new Error((payload&&payload.message)||'Fenestra bridge command failed'));}"
-         "};"
-         "window.__fenestraBridgeEmit=function(name,payload){"
-         "const set=listeners.get(String(name));if(set){for(const cb of Array.from(set)){queueMicrotask(()=>cb(payload));}}"
-         "window.dispatchEvent(new CustomEvent('fenestra:'+String(name),{detail:payload}));"
-         "};"
-         "window.fenestra=window.fenestra||{};"
-         "window.fenestra.bridge={__native:true,commands:Array.from(commands),listen(name,callback){"
-         "const key=String(name);let set=listeners.get(key);if(!set){set=new Set();listeners.set(key,set);}set.add(callback);"
-         "return()=>{set.delete(callback);if(!set.size)listeners.delete(key);};},invoke(name,params={}){"
-         "if(!commands.has(name))return Promise.reject(new Error('Fenestra bridge command not registered: '+name));"
-         "const id=String(nextId++);"
-         "const payload=encodeURIComponent(JSON.stringify(params));"
-         "const url='fenestra://bridge/'+encodeURIComponent(id)+'?name='+encodeURIComponent(name)+'&payload='+payload;"
-         "return new Promise((resolve,reject)=>{"
-         "pending.set(id,{resolve,reject});"
-         "setTimeout(()=>{if(pending.has(id)){pending.delete(id);reject(new Error('Fenestra bridge command timed out: '+name));}},60000);"
-         "window.location.href=url;"
-         "});"
-         "}};"
-         "window.fenestra.activity={begin(options={}){"
-         "return window.fenestra.bridge.invoke('fenestra.activity.begin',options).then(record=>{"
-         "let ended=false;return Object.assign({},record,{end(){if(ended)return Promise.resolve({id:record.id,ended:false});ended=true;return window.fenestra.bridge.invoke('fenestra.activity.end',{id:record.id});}});});},"
-         "list(){return window.fenestra.bridge.invoke('fenestra.activity.list');}};"
-         "})();";
+  // The canonical Fenestra bridge script is kept in
+  // crates/fenestra-bridge/src/web_bridge.js and is embedded here as
+  // FENESTRA_BRIDGE_JS_RAW by host.rs at C++ build time. It reads the
+  // command list from `window.__fenestraBridgeCommands`, so we just need
+  // to set that variable first.
+  std::string prelude =
+      "window.__fenestraBridgeCommands=" + JsArray(commands) + ";";
+  return prelude + FENESTRA_BRIDGE_JS_RAW;
 }
 
 class FenestraBrowserViewDelegate : public CefBrowserViewDelegate {

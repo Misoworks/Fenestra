@@ -21,6 +21,7 @@
 #include <sys/uio.h>
 #include <unistd.h>
 
+#include "fenestra_bridge_js.h"
 #include "include/cef_app.h"
 #include "include/cef_browser.h"
 #include "include/cef_parser.h"
@@ -197,11 +198,12 @@ std::string JsArray(const std::set<std::string>& values) {
 }
 
 std::string BridgeInstallScript(const std::set<std::string>& commands) {
-  return "(function(){"
-         "window.fenestra=window.fenestra||{};"
-         "if(window.fenestra.__nativeApiVersion===1)return;"
-         "window.fenestra.__nativeApiVersion=1;"
-         "const commands=new Set(" +
+  // See the matching comment in handler.cc: the canonical bridge script is
+  // embedded as FENESTRA_BRIDGE_JS_RAW by host.rs at C++ build time.
+  std::string prelude =
+      "window.__fenestraBridgeCommands=" + JsArray(commands) + ";";
+  return prelude + FENESTRA_BRIDGE_JS_RAW;
+}
          JsArray(commands) +
          ");"
          "const pending=new Map();const listeners=new Map();let nextId=1;"

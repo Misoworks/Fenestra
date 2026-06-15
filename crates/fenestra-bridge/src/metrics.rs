@@ -1,3 +1,11 @@
+//! Engine-neutral launch metrics.
+//!
+//! Both the CEF and WebView2 backends record a sequence of named launch
+//! stages (`dev_command.spawned`, `host.spawned.pid.<pid>`, etc.) and
+//! expose a snapshot via `WebView2Process::metrics()` /
+//! `FenestraProcess::metrics()`. The shape of the snapshot is shared so
+//! tracing and profiling tools work the same way regardless of engine.
+
 use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -19,7 +27,7 @@ pub struct FenestraLaunchMetricsSnapshot {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct LaunchMetrics {
+pub struct LaunchMetrics {
     started: Instant,
     label: String,
     trace: bool,
@@ -27,7 +35,7 @@ pub(crate) struct LaunchMetrics {
 }
 
 impl LaunchMetrics {
-    pub(crate) fn new(label: impl Into<String>) -> Self {
+    pub fn new(label: impl Into<String>) -> Self {
         Self {
             started: Instant::now(),
             label: label.into(),
@@ -36,7 +44,7 @@ impl LaunchMetrics {
         }
     }
 
-    pub(crate) fn mark(&self, stage: impl Into<String>) {
+    pub fn mark(&self, stage: impl Into<String>) {
         let stage = stage.into();
         let elapsed = self.started.elapsed();
         if self.trace {
@@ -51,7 +59,7 @@ impl LaunchMetrics {
         }
     }
 
-    pub(crate) fn snapshot(&self) -> FenestraLaunchMetricsSnapshot {
+    pub fn snapshot(&self) -> FenestraLaunchMetricsSnapshot {
         FenestraLaunchMetricsSnapshot {
             label: self.label.clone(),
             elapsed: self.started.elapsed(),

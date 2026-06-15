@@ -49,6 +49,7 @@ pub fn run_runtime(command: RuntimeCommand) -> ExitCode {
 fn list_runtimes(json: bool) -> ExitCode {
     let config = RuntimeConfig::default();
     let runtimes = detect_runtime(&config);
+    let engine = config.engine;
 
     if json {
         let entries = runtimes
@@ -74,10 +75,19 @@ fn list_runtimes(json: bool) -> ExitCode {
         println!("{{\"runtimes\":[{entries}]}}");
     } else {
         if runtimes.is_empty() {
-            println!("No CEF runtimes found.");
-            println!("Run `fenestra runtime install cef` to install a user-local runtime.");
+            println!("No {} runtimes found.", engine.id());
+            match engine {
+                RuntimeEngine::Cef => {
+                    println!("Run `fenestra runtime install cef` to install a user-local runtime.");
+                }
+                RuntimeEngine::WebView2 => {
+                    println!(
+                        "WebView2 (Evergreen) is system-managed. It is bundled with Windows and updated via Windows Update."
+                    );
+                }
+            }
         } else {
-            println!("CEF runtimes:");
+            println!("{} runtimes:", engine.id());
             for runtime in &runtimes {
                 let location_type = match &runtime.location {
                     fenestra_runtime::RuntimeLocation::System(_) => "system",
@@ -109,6 +119,14 @@ fn install_runtime(engine: &str, package: &str) -> ExitCode {
             runtime.location.path().display()
         );
         return ExitCode::SUCCESS;
+    }
+
+    if config.engine.is_system_managed() {
+        eprintln!(
+            "{engine} is system-managed and cannot be installed by Fenestra. \
+             It is bundled with Windows (WebView2 / Evergreen) and updated via Windows Update."
+        );
+        return ExitCode::from(1);
     }
 
     match latest_install_plan(&config) {
@@ -196,18 +214,23 @@ fn doctor_runtime(json: bool) -> ExitCode {
     let runtimes = detect_runtime(&config);
     let resolved = resolve_runtime(&config).ok();
     let has_compatible = resolved.is_some();
-
+    let engine = config.engine;
     let status = if has_compatible {
         "ok"
     } else if runtimes.is_empty() {
-        "missing"
+        if engine.is_system_managed() {
+            "missing-system"
+        } else {
+            "missing"
+        }
     } else {
         "outdated"
     };
 
     if json {
         println!(
-            "{{\"cef_status\":\"{status}\",\"runtimes\":[{}]}}",
+            "{{\"engine\":\"{}\",\"status\":\"{status}\",\"runtimes\":[{}]}}",
+            engine.id(),
             runtimes
                 .iter()
                 .map(|r| format!(
@@ -220,14 +243,24 @@ fn doctor_runtime(json: bool) -> ExitCode {
         );
     } else {
         match status {
-            "ok" => println!("CEF runtime: ok"),
+            "ok" => println!("{} runtime: ok", engine.id()),
             "missing" => {
-                println!("CEF runtime: not found");
-                println!("  Install with: fenestra runtime install cef");
+                println!("{} runtime: not found", engine.id());
+                println!("  Install with: fenestra runtime install {}", engine.id());
+            }
+            "missing-system" => {
+                println!("{} runtime: not found", engine.id());
+                println!("  WebView2 (Evergreen) is system-managed. It is bundled with modern");
+                println!("  Windows and updated via Windows Update. If you don't have it,");
+                println!("  install the Evergreen Standalone from");
+                println!("  https://developer.microsoft.com/microsoft-edge/webview2/.");
             }
             "outdated" => {
-                println!("CEF runtime: outdated (found versions below minimum 126)");
-                println!("  Update with: fenestra runtime install cef");
+                println!(
+                    "{} runtime: outdated (found versions below minimum 126)",
+                    engine.id()
+                );
+                println!("  Update with: fenestra runtime install {}", engine.id());
             }
             _ => {}
         }
@@ -242,7 +275,7 @@ fn doctor_runtime(json: bool) -> ExitCode {
 
 fn runtime_config(engine: &str, package: &str) -> Result<RuntimeConfig, ()> {
     let Some(engine) = RuntimeEngine::parse(engine) else {
-        eprintln!("unknown engine `{engine}`; use cef");
+        eprintln!("unknown engine `{engine}`; use cef or webview2");
         return Err(());
     };
     let Some(package) = RuntimePackage::parse(package) else {
@@ -264,6 +297,8 @@ mod tests {
     #[test]
     fn runtime_engine_parses_known_types() {
         assert!(RuntimeEngine::parse("cef").is_some());
+        assert!(RuntimeEngine::parse("webview2").is_some());
+        assert!(RuntimeEngine::parse("evergreen").is_some());
         assert!(RuntimeEngine::parse("unknown").is_none());
     }
 }

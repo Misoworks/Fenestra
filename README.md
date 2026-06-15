@@ -107,7 +107,9 @@ fenestra-cef = { git = "https://github.com/Misoworks/Fenestra", branch = "main" 
 
 Most apps only need `fenestra-cef`. Standalone uses:
 
-- `fenestra-runtime` — runtime discovery, install, and pruning, without the CEF launcher
+- `fenestra-runtime` — runtime discovery, install, and pruning for both `cef` and `webview2` (the latter is system-managed)
+- `fenestra-bridge` — engine-neutral bridge, activity, JS, and launch-metrics types
+- `fenestra-webview2` — the WebView2 (Evergreen) backend on Windows; re-exported as `FenestraWindow` on that host
 - `fenestra-cli` — the `fenestra` binary
 
 ### CLI
@@ -132,11 +134,11 @@ After install, `fenestra --help` lists every subcommand. The current surface:
 | `fenestra install [SOURCE] [--autostart]` | Register the current source checkout as a local desktop app; writes `~/.local/share/fenestra/apps/<id>/` plus a `.desktop` file under `~/.local/share/applications/`. `--autostart` also writes `~/.config/autostart/<id>.desktop` |
 | `fenestra update [TARGET] [--all]` | Rebuild web assets, re-stage the app, and refresh launcher metadata for a previously installed source checkout |
 | `fenestra bundle [SOURCE] --target <T>` | Stage the app and (when the right tool is on `PATH`) produce a package. Targets: `portable`, `linux`, `deb`, `rpm`, `appimage`, `windows`, `exe`, `msi`, `macos`, `dmg` |
-| `fenestra runtime list` | Show installed CEF runtimes under `~/.local/share/fenestra/runtimes/cef/` |
-| `fenestra runtime install cef [--package minimal\|client\|standard]` | Download and unpack a CEF build for the host platform |
-| `fenestra runtime remove cef [VERSION] [--package ...]` | Remove a specific CEF version |
-| `fenestra runtime prune cef --keep N` | Keep only the N most recent CEF versions |
-| `fenestra runtime doctor` | Check that the CEF runtime, CMake toolchain, and shell-out deps are usable |
+| `fenestra runtime list` | Show installed runtimes under `~/.local/share/fenestra/runtimes/<engine>/` |
+| `fenestra runtime install <engine> [--package minimal\|client\|standard]` | Download and unpack a runtime for the host platform. `engine` is `cef` or `webview2` |
+| `fenestra runtime remove <engine> [VERSION] [--package ...]` | Remove a specific runtime version. `webview2` is a no-op (system-managed) |
+| `fenestra runtime prune <engine> --keep N` | Keep only the N most recent runtime versions. `webview2` is a no-op |
+| `fenestra runtime doctor` | Check that the runtime, CMake toolchain, and shell-out deps are usable. The `engine` is the platform default: `webview2` on Windows, `cef` elsewhere |
 
 The CLI shell-outs to `cargo`, `bun` / `pnpm` / `yarn` / `npm`, `tar`,
 `dpkg-deb`, `appimagetool`, `hdiutil`, `wix`, and `makensis`. When the tool for
@@ -146,40 +148,67 @@ host that has the tool.
 
 ## Platforms
 
-Fenestra is CEF on every platform — Linux, Windows, and macOS all use the same
-embedded Chromium. There is no WebView2, WKWebView, or platform-native
-webview fallback; the public type is named `FenestraWindow` rather than
-`CefWindow` because the engine is meant to be an implementation detail that
-apps build against, not a brand they ship with.
+Fenestra picks the right engine on each host. The public `FenestraWindow`
+type is a type alias:
+
+- **Windows** — `fenestra_webview2::WebView2Window`. WebView2 (Evergreen)
+  is bundled with Windows, auto-updated by Windows Update, and shares the
+  process. No C++ host, no CMake build, no ninja. The default.
+- **Linux / macOS** — `fenestra_cef::CefWindow`. CEF is downloaded and built
+  on first launch. The same builder API works for both.
+
+Both backends share the same wire format, JS surface, and activity
+registry — they live in `fenestra-bridge` (`crates/fenestra-bridge/`).
+The canonical `web_bridge.js` is a single file included as a `&str` from
+`fenestra_bridge::INSTALL_SCRIPT` and embedded into the C++ CEF host as
+a generated `fenestra_bridge_js.h` at build time. There is exactly one
+JS body, no C++ copy to keep in sync.
 
 ### What runs on each OS
 
-- **Linux** — two internal host modes, both CEF:
-  - **OSR (off-screen rendering) host** — used for frameless, transparent, and
-    glass windows, and for everything that needs to draw into a Wayland
-    layer-shell surface. The Rust side picks this automatically via
-    `FenestraWindow::should_use_osr_host` (`crates/fenestra-cef/src/lib.rs:1211-1238`).
+- **Windows** — WebView2 backend in `fenestra-webview2`. The launch flow
+  uses `winit 0.31` for the event loop and HWND, then
+  `CreateCoreWebView2EnvironmentWithOptions` +
+  `CreateCoreWebView2ControllerWithOptions` to mount the webview in-process.
+  Bridge dispatch goes through `add_NavigationStarting` (cancels the
+  `fenestra://bridge/...` navigation, parses with
+  `fenestra_bridge::parse_bridge_url`, dispatches through
+  `fenestra_bridge::BridgeRuntime`, then posts the response via
+  `webview.ExecuteScript("window.__fenestraBridgeResolve(id, ok, payload)")`).
+  Bridge install uses `add_DocumentStateChanged` to call
+  `fenestra_bridge::install_script(&commands)` on every main-frame
+  document. Frameless / drag regions / DWM glass are stubbed pending a
+  Windows-host CI run; the load-bearing shapes
+  (`apply_dwm_backdrop`, `NonClientRegionChanged`, the controller event
+  surface) are in place and the `Windows` build of `fenestra-webview2`
+  compiles cleanly.
+- **Linux** — two internal CEF host modes:
+  - **OSR (off-screen rendering) host** — used for frameless, transparent,
+    and glass windows, and for everything that needs to draw into a
+    Wayland layer-shell surface. The Rust side picks this automatically
+    via `FenestraWindow::should_use_osr_host`
+    (`crates/fenestra-cef/src/lib.rs:1211-1238`).
   - **Windowed CEF host** — used for `system_chrome()` and other
     system-decorated compatibility windows. Force it explicitly with
-    `FENESTRA_CEF_BACKEND=windowed` if you want a top-level CEF window on
-    Linux.
-  - Wayland is preferred. `fenestra-cef` passes `--ozone-platform=wayland`,
-    sets `GDK_BACKEND=wayland` and `XDG_SESSION_TYPE=wayland`, and exports
-    `LD_LIBRARY_PATH` for the CEF release dir.
-  - Linux-only desktop services: `ksni` StatusNotifier tray icons, `ashpd` XDG
-    desktop portal global shortcuts, `layershellev` layer-shell surfaces,
-    `.desktop` autostart, `x-scheme-handler` deep-link MIME registration,
-    Chromium / Firefox native-messaging manifests, and single-instance
-    routing through a `UnixListener` in `$XDG_RUNTIME_DIR`.
-  - Tray, global-shortcut, and second-instance events are forwarded into the
-    web bridge as `window.fenestra.bridge.listen("tray.activate" | "globalShortcut.activate" | "singleInstance.activate", ...)`.
-- **Windows** — windowed CEF host, MSVC toolchain. The dev-server helper uses
-  `cmd /C` for the build. The `desktop_services` module is gated to Linux, so
-  tray / autostart / global shortcuts / deep links on Windows come from the
-  upstream `stuk-platform` crate rather than `fenestra-cef`.
-- **macOS** — windowed CEF host, Xcode command-line tools. `DYLD_FALLBACK_LIBRARY_PATH`
-  points at the CEF `Release` dir. As on Windows, desktop services on macOS
-  are provided by upstream `stuk-platform`.
+    `FENESTRA_CEF_BACKEND=windowed` if you want a top-level CEF window
+    on Linux.
+  - Wayland is preferred. `fenestra-cef` passes
+    `--ozone-platform=wayland`, sets `GDK_BACKEND=wayland` and
+    `XDG_SESSION_TYPE=wayland`, and exports `LD_LIBRARY_PATH` for the CEF
+    release dir.
+  - Linux-only desktop services: `ksni` StatusNotifier tray icons, `ashpd`
+    XDG desktop portal global shortcuts, `layershellev` layer-shell
+    surfaces, `.desktop` autostart, `x-scheme-handler` deep-link MIME
+    registration, Chromium / Firefox native-messaging manifests, and
+    single-instance routing through a `UnixListener` in
+    `$XDG_RUNTIME_DIR`.
+  - Tray, global-shortcut, and second-instance events are forwarded into
+    the web bridge as
+    `window.fenestra.bridge.listen("tray.activate" | "globalShortcut.activate" | "singleInstance.activate", ...)`.
+- **macOS** — windowed CEF host, Xcode command-line tools.
+  `DYLD_FALLBACK_LIBRARY_PATH` points at the CEF `Release` dir. As on
+  Linux, desktop services are gated to Linux; on macOS they come from
+  upstream `stuk-platform`.
 - **Mobile** — `FenestraWindow::launch_or_install` returns
   `FenestraError::MobileSystemWebViewRequired` on Android and iOS; mobile
   targets are expected to use the OS webview directly.

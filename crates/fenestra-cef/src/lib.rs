@@ -1,7 +1,4 @@
-mod activity;
-mod bridge;
 mod host;
-mod metrics;
 mod process_tree;
 
 #[cfg(target_os = "linux")]
@@ -42,15 +39,22 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub use activity::{ActivityOptions, ActivityRecord, FenestraActivityLease};
-#[cfg(target_os = "linux")]
-pub(crate) use bridge::BridgeRuntime;
-pub use bridge::{
-    BridgeCommand, BridgeCommandDescriptor, BridgeError, BridgeHandlers, BridgeRegistry,
-    BridgeResponse, BridgeResult, WebViewSecurity,
-};
 pub use desktop_services::{
     LinuxDesktopServiceState, apply_linux_desktop_services, start_desktop_event_forwarder,
+};
+pub(crate) use fenestra_bridge::BridgeRuntime;
+use fenestra_bridge::LaunchMetrics;
+pub use fenestra_bridge::{
+    ActivityEventEmitter, ActivityHostUpdate, ActivityOptions, ActivityRecord,
+    FenestraActivityLease,
+};
+pub use fenestra_bridge::{
+    BridgeCommand, BridgeCommandDescriptor, BridgeError, BridgeHandlers, BridgeRegistry,
+    BridgeResponse, BridgeResult, WebViewSecurity, bridge_commands_with_internal,
+    current_bridge_targets, host_update_json,
+};
+pub use fenestra_bridge::{
+    FENESTRA_TRACE_ENV, FenestraLaunchMetric, FenestraLaunchMetricsSnapshot,
 };
 pub use fenestra_runtime::{
     RuntimeConfig, RuntimeEngine, RuntimeError, RuntimeInfo, RuntimeInstallProgress,
@@ -58,8 +62,6 @@ pub use fenestra_runtime::{
     install_user_runtime_with_progress, resolve_runtime, user_runtime_path,
 };
 pub use host::{ensure_cef_host, ld_library_path, webview_cache_dir};
-use metrics::LaunchMetrics;
-pub use metrics::{FENESTRA_TRACE_ENV, FenestraLaunchMetric, FenestraLaunchMetricsSnapshot};
 use process_tree::{ManagedChild, prepare_child_command};
 pub use stuk_platform::{
     AutostartEntry, DeepLinkRegistration, GlobalShortcutRegistration, NativeMessagingHost,
@@ -225,6 +227,7 @@ fn env_flag(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(not(target_os = "windows"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FenestraLifecyclePolicy {
     pub active_frame_rate: u32,
@@ -236,6 +239,7 @@ pub struct FenestraLifecyclePolicy {
     pub hibernate_grace: Duration,
 }
 
+#[cfg(not(target_os = "windows"))]
 impl Default for FenestraLifecyclePolicy {
     fn default() -> Self {
         Self {
@@ -250,6 +254,7 @@ impl Default for FenestraLifecyclePolicy {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 impl FenestraLifecyclePolicy {
     pub fn browser_tab() -> Self {
         Self {
@@ -297,6 +302,7 @@ pub struct DesktopServiceConfig {
     pub single_instance_policy: Option<SingleInstancePolicy>,
 }
 
+#[cfg(not(target_os = "windows"))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FenestraWindowChrome {
     #[default]
@@ -306,6 +312,7 @@ pub enum FenestraWindowChrome {
     None,
 }
 
+#[cfg(not(target_os = "windows"))]
 impl FenestraWindowChrome {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
@@ -331,6 +338,7 @@ impl FenestraWindowChrome {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FenestraWindowControlAction {
     Minimize,
@@ -338,6 +346,7 @@ pub enum FenestraWindowControlAction {
     Close,
 }
 
+#[cfg(not(target_os = "windows"))]
 impl FenestraWindowControlAction {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
@@ -357,23 +366,124 @@ impl FenestraWindowControlAction {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FenestraWindowControlRegion {
     pub action: FenestraWindowControlAction,
     pub rect: WindowRegionRect,
 }
 
+#[cfg(not(target_os = "windows"))]
 impl FenestraWindowControlRegion {
     pub fn new(action: FenestraWindowControlAction, rect: WindowRegionRect) -> Self {
         Self { action, rect }
     }
 }
 
+/// CEF-backed window builder. On non-Windows hosts `FenestraWindow`
+/// is a type alias to this struct; on Windows it points at the
+/// `WebView2Window` in `fenestra-webview2`.
 #[derive(Clone, Debug)]
-pub struct FenestraWindow {
+pub struct CefWindow {
     pub config: FenestraWindowConfig,
     bridge_handlers: BridgeHandlers,
 }
+
+/// Per-platform overrides for the default `.glass()` material.
+///
+/// `GlassSpec` lets an app ask for a different background effect on
+/// each target OS without `cfg`-gating the builder. Pass it to
+/// [`CefWindow::glass_spec`] (or the `FenestraWindow` alias of it on
+/// the current host).
+///
+/// String values are parsed through
+/// [`WindowBackgroundEffect::parse`](stuk_platform::WindowBackgroundEffect::parse),
+/// so unknown names silently fall back to the platform default. The
+/// effect names live in `stuk-platform`; the Asher-specific ones
+/// (`luca`, `niko`, `maris`) are intentionally not surfaced through
+/// fenestra yet, but the parser still accepts them if you need to set
+/// them explicitly via `glass_effect` / `glass_material`.
+///
+/// Default per platform (when the spec does not override the field):
+///
+/// | OS      | Effect      | Notes                                         |
+/// | ------- | ----------- | --------------------------------------------- |
+/// | Windows | `Acrylic`   | DWM Acrylic system backdrop                   |
+/// | macOS   | `Vibrancy`  | NSVisualEffectView, the most transparent blur |
+/// | Linux   | `Blur`      | Wayland `ext_background_effect_v1` blur       |
+/// | Asher   | (no default) | Asher is not implemented yet                 |
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GlassSpec {
+    windows: Option<WindowBackgroundEffect>,
+    macos: Option<WindowBackgroundEffect>,
+    linux: Option<WindowBackgroundEffect>,
+}
+
+impl GlassSpec {
+    /// Empty spec; resolving it falls back to the per-platform
+    /// defaults listed in [`GlassSpec`].
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Override the Windows effect. Unknown names are ignored.
+    pub fn windows(mut self, effect: &str) -> Self {
+        self.windows = WindowBackgroundEffect::parse(effect);
+        self
+    }
+
+    /// Override the macOS effect. Unknown names are ignored.
+    pub fn macos(mut self, effect: &str) -> Self {
+        self.macos = WindowBackgroundEffect::parse(effect);
+        self
+    }
+
+    /// Override the Linux effect. Unknown names are ignored.
+    pub fn linux(mut self, effect: &str) -> Self {
+        self.linux = WindowBackgroundEffect::parse(effect);
+        self
+    }
+
+    pub(crate) fn resolve(self) -> WindowBackgroundEffect {
+        match stuk_platform::current_desktop_os() {
+            stuk_platform::PlatformOs::Windows => {
+                self.windows.unwrap_or(WindowBackgroundEffect::Acrylic)
+            }
+            stuk_platform::PlatformOs::Macos => {
+                self.macos.unwrap_or(WindowBackgroundEffect::Vibrancy)
+            }
+            stuk_platform::PlatformOs::Linux => self.linux.unwrap_or(WindowBackgroundEffect::Blur),
+            _ => WindowBackgroundEffect::None,
+        }
+    }
+}
+
+/// `FenestraWindow` is the public window-builder type. The
+/// `fenestra-cef` crate owns this alias so the same `use
+/// fenestra_cef::FenestraWindow` import in app code resolves to the
+/// right backend on every host:
+///
+/// - **Windows** — `fenestra_webview2::WebView2Window` (WebView2 /
+///   Evergreen, system-managed)
+/// - **Linux / macOS** — `CefWindow` (CEF, user-installed)
+#[cfg(target_os = "windows")]
+pub use fenestra_webview2::WebView2Window as FenestraWindow;
+
+#[cfg(not(target_os = "windows"))]
+pub type FenestraWindow = CefWindow;
+
+// On Windows, re-export the WebView2 control-action / control-region /
+// chrome / lifecycle types under the same `Fenestra*` names that
+// non-Windows apps get from `fenestra-cef` directly. This keeps
+// app-level imports (`use fenestra_cef::FenestraWindowControlAction`)
+// working on every host without per-platform `cfg` gates.
+#[cfg(target_os = "windows")]
+pub use fenestra_webview2::{
+    WebView2LifecyclePolicy as FenestraLifecyclePolicy,
+    WebView2WindowChrome as FenestraWindowChrome,
+    WebView2WindowControlAction as FenestraWindowControlAction,
+    WebView2WindowControlRegion as FenestraWindowControlRegion,
+};
 
 pub struct FenestraProcess {
     child: ManagedChild,
@@ -383,7 +493,7 @@ pub struct FenestraProcess {
     desktop_services: Option<LinuxDesktopServiceState>,
     desktop_event_thread: Option<JoinHandle<()>>,
     desktop_event_running: Option<Arc<AtomicBool>>,
-    activity: activity::ActivityRegistry,
+    activity: fenestra_bridge::ActivityRegistry,
     metrics: LaunchMetrics,
 }
 
@@ -452,7 +562,11 @@ impl FenestraProcess {
     }
 
     pub fn begin_activity_with(&self, options: ActivityOptions) -> FenestraActivityLease {
-        self.activity.lease(options, self.bridge_emitter.clone())
+        let emitter = self.bridge_emitter.clone().map(|emitter| {
+            std::sync::Arc::new(emitter)
+                as std::sync::Arc<dyn fenestra_bridge::ActivityEventEmitter>
+        });
+        self.activity.lease(options, emitter)
     }
 
     pub fn activities(&self) -> Vec<ActivityRecord> {
@@ -569,12 +683,18 @@ impl BridgeEventEmitter {
         )
     }
 
-    pub(crate) fn emit_activity_update(&self, update: &activity::ActivityHostUpdate) -> bool {
+    pub(crate) fn emit_activity_update(
+        &self,
+        update: &fenestra_bridge::ActivityHostUpdate,
+    ) -> bool {
         let command = match update {
-            activity::ActivityHostUpdate::Begin(_) => "activity.begin",
-            activity::ActivityHostUpdate::End(_) => "activity.end",
+            fenestra_bridge::ActivityHostUpdate::Begin(_) => "activity.begin",
+            fenestra_bridge::ActivityHostUpdate::End(_) => "activity.end",
         };
-        self.emit_host_control(command, &activity::host_update_json(update).to_string())
+        self.emit_host_control(
+            command,
+            &fenestra_bridge::host_update_json(update).to_string(),
+        )
     }
 
     fn emit_host_control(&self, command: &str, value: &str) -> bool {
@@ -589,6 +709,12 @@ impl BridgeEventEmitter {
             return false;
         }
         stdin.flush().is_ok()
+    }
+}
+
+impl fenestra_bridge::ActivityEventEmitter for BridgeEventEmitter {
+    fn emit_activity_update(&self, update: &fenestra_bridge::ActivityHostUpdate) -> bool {
+        BridgeEventEmitter::emit_activity_update(self, update)
     }
 }
 
@@ -622,7 +748,7 @@ fn platform_event_payload(event: PlatformEvent) -> (&'static str, serde_json::Va
     }
 }
 
-impl FenestraWindow {
+impl CefWindow {
     pub fn new() -> Self {
         Self {
             config: FenestraWindowConfig::default(),
@@ -802,7 +928,13 @@ impl FenestraWindow {
     }
 
     pub fn glass(self) -> Self {
-        self.glass_effect(WindowBackgroundEffect::Luca)
+        self.glass_spec(GlassSpec::new())
+    }
+
+    pub fn glass_spec(mut self, spec: GlassSpec) -> Self {
+        self.config.transparent = true;
+        self.config.background_effect = spec.resolve();
+        self
     }
 
     pub fn glass_effect(mut self, effect: WindowBackgroundEffect) -> Self {
@@ -1278,7 +1410,7 @@ impl FenestraWindow {
     }
 }
 
-impl Default for FenestraWindow {
+impl Default for CefWindow {
     fn default() -> Self {
         Self::new()
     }
@@ -1303,10 +1435,10 @@ fn launch_cef_host(
             message: error.to_string(),
         })?;
     metrics.mark(format!("host.spawned.pid.{}", child.id()));
-    let activity = activity::ActivityRegistry::default();
+    let activity = fenestra_bridge::ActivityRegistry::default();
     let bridge_dispatch = spawn_bridge_dispatch(
         &mut child,
-        bridge::BridgeRuntime::new(
+        fenestra_bridge::BridgeRuntime::new(
             bridge_handlers.clone(),
             config.bridge.clone(),
             config.security.clone(),
@@ -1371,7 +1503,7 @@ fn cef_window_command(
         .arg(format!("--fenestra-height={}", config.height.max(1)))
         .arg(format!(
             "--fenestra-bridge-commands={}",
-            activity::bridge_commands_with_internal(config.bridge.commands()).join(",")
+            bridge_commands_with_internal(config.bridge.commands()).join(",")
         ))
         .arg(format!("--root-cache-path={}", cache_dir.display()))
         .arg(format!(
@@ -1429,8 +1561,8 @@ struct BridgeDispatch {
 
 fn spawn_bridge_dispatch(
     child: &mut Child,
-    bridge_runtime: bridge::BridgeRuntime,
-    activity: activity::ActivityRegistry,
+    bridge_runtime: fenestra_bridge::BridgeRuntime,
+    activity: fenestra_bridge::ActivityRegistry,
 ) -> BridgeDispatch {
     let Some(stdin) = child.stdin.take() else {
         return BridgeDispatch {
@@ -1808,7 +1940,7 @@ fn format_url_host(host: &str) -> String {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "windows")))]
 mod tests {
     use super::*;
 
@@ -1840,27 +1972,58 @@ mod tests {
     }
 
     #[test]
-    fn glass_defaults_to_luca_material() {
+    fn glass_defaults_to_platform_native_material() {
         let window = FenestraWindow::new().glass();
         assert!(window.config.transparent);
-        assert_eq!(
-            window.config.background_effect,
-            WindowBackgroundEffect::Luca
-        );
+        let expected = match stuk_platform::current_desktop_os() {
+            stuk_platform::PlatformOs::Windows => WindowBackgroundEffect::Acrylic,
+            stuk_platform::PlatformOs::Macos => WindowBackgroundEffect::Vibrancy,
+            stuk_platform::PlatformOs::Linux => WindowBackgroundEffect::Blur,
+            _ => WindowBackgroundEffect::None,
+        };
+        assert_eq!(window.config.background_effect, expected);
+    }
+
+    #[test]
+    fn glass_spec_uses_overridden_material() {
+        let window = FenestraWindow::new().glass_spec(GlassSpec::new().windows("mica"));
+        assert!(window.config.transparent);
+        let expected = if cfg!(target_os = "windows") {
+            WindowBackgroundEffect::Mica
+        } else {
+            match stuk_platform::current_desktop_os() {
+                stuk_platform::PlatformOs::Macos => WindowBackgroundEffect::Vibrancy,
+                stuk_platform::PlatformOs::Linux => WindowBackgroundEffect::Blur,
+                _ => WindowBackgroundEffect::None,
+            }
+        };
+        assert_eq!(window.config.background_effect, expected);
+    }
+
+    #[test]
+    fn glass_spec_drops_unknown_effect_names() {
+        let window = FenestraWindow::new().glass_spec(GlassSpec::new().windows("sparkles"));
+        let expected = match stuk_platform::current_desktop_os() {
+            stuk_platform::PlatformOs::Windows => WindowBackgroundEffect::Acrylic,
+            stuk_platform::PlatformOs::Macos => WindowBackgroundEffect::Vibrancy,
+            stuk_platform::PlatformOs::Linux => WindowBackgroundEffect::Blur,
+            _ => WindowBackgroundEffect::None,
+        };
+        assert_eq!(window.config.background_effect, expected);
     }
 
     #[test]
     fn glass_material_tracks_low_power_fallback() {
         let window = FenestraWindow::new()
-            .glass_material(WindowBackgroundEffect::Niko)
-            .glass_low_power_material(WindowBackgroundEffect::Maris);
+            .glass_material(WindowBackgroundEffect::Acrylic)
+            .glass_low_power_material(WindowBackgroundEffect::Mica);
         assert_eq!(
             window.config.background_effect,
-            WindowBackgroundEffect::Niko
+            WindowBackgroundEffect::Acrylic
         );
         assert_eq!(
             window.config.low_power_background_effect,
-            Some(WindowBackgroundEffect::Maris)
+            Some(WindowBackgroundEffect::Mica)
         );
     }
 

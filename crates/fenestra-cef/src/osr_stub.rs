@@ -8,10 +8,8 @@
 
 use std::path::Path;
 
-use crate::{
-    BridgeHandlers, FenestraError, FenestraProcess, FenestraResult, FenestraWindowConfig,
-    metrics::LaunchMetrics,
-};
+use crate::{BridgeHandlers, FenestraError, FenestraProcess, FenestraResult, FenestraWindowConfig};
+use fenestra_bridge::LaunchMetrics;
 
 pub(crate) fn run_from_args(_args: &[String]) -> bool {
     false

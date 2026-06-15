@@ -6,12 +6,11 @@ use std::{
 
 use crate::{
     BridgeHandlers, BridgeRuntime, FenestraError, FenestraProcess, FenestraResult,
-    FenestraWindowConfig, ld_library_path,
-    metrics::LaunchMetrics,
-    prepare_bridge_command,
+    FenestraWindowConfig, ld_library_path, prepare_bridge_command,
     process_tree::{ManagedChild, prepare_child_command},
     spawn_bridge_dispatch, webview_cache_dir,
 };
+use fenestra_bridge::LaunchMetrics;
 
 pub(crate) const OSR_HOST_ARG: &str = "--fenestra-osr-host";
 
@@ -61,7 +60,7 @@ pub(crate) fn launch_process(
         "shell_surface": crate::osr_protocol::shell_surface_to_json(config.shell_surface.as_ref()),
         "background_effect": config.effective_background_effect().as_str(),
         "chrome": config.chrome.as_str(),
-        "bridge_commands": crate::activity::bridge_commands_with_internal(config.bridge.commands()),
+        "bridge_commands": fenestra_bridge::bridge_commands_with_internal(config.bridge.commands()),
         "regions": crate::osr_protocol::regions_to_json(&config.regions),
         "drag_regions": crate::osr_protocol::rects_to_json(&config.drag_regions),
         "drag_exclusion_regions": crate::osr_protocol::rects_to_json(&config.drag_exclusion_regions),
@@ -90,7 +89,7 @@ pub(crate) fn launch_process(
             message: format!("failed to launch Fenestra OSR host: {error}"),
         })?;
     metrics.mark(format!("osr_host.spawned.pid.{}", child.id()));
-    let activity = crate::activity::ActivityRegistry::default();
+    let activity = fenestra_bridge::ActivityRegistry::default();
     let bridge_dispatch = spawn_bridge_dispatch(
         &mut child,
         BridgeRuntime::new(

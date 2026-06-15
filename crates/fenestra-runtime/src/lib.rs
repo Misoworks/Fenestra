@@ -30,6 +30,10 @@ pub enum RuntimeError {
     InstallationFailed(String),
     #[error("runtime downloads are disabled by configuration")]
     DownloadsDisabled,
+    #[error("{engine} is system-managed and cannot be installed by Fenestra")]
+    NotUserInstallable { engine: &'static str },
+    #[error("{engine} is not supported on this platform")]
+    UnsupportedPlatform { engine: &'static str },
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -37,20 +41,30 @@ pub enum RuntimeError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeEngine {
     Cef,
+    WebView2,
 }
 
 impl RuntimeEngine {
     pub fn id(self) -> &'static str {
         match self {
             Self::Cef => "cef",
+            Self::WebView2 => "webview2",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "cef" => Some(Self::Cef),
+            "webview2" | "evergreen" => Some(Self::WebView2),
             _ => None,
         }
+    }
+
+    /// True if this engine is system-managed on its host platform and
+    /// therefore has no user-local install path. `WebView2` (Evergreen) is
+    /// distributed by Windows Update; `CEF` is user-installed.
+    pub fn is_system_managed(self) -> bool {
+        matches!(self, Self::WebView2)
     }
 }
 
@@ -152,7 +166,7 @@ pub struct RuntimeConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
-            engine: RuntimeEngine::Cef,
+            engine: default_engine(),
             mode: RuntimeMode::SharedPreferred,
             package: RuntimePackage::Standard,
             min_version: "126".to_string(),
@@ -161,6 +175,17 @@ impl Default for RuntimeConfig {
             allow_bundled: true,
             bundled_dir: None,
         }
+    }
+}
+
+fn default_engine() -> RuntimeEngine {
+    #[cfg(target_os = "windows")]
+    {
+        RuntimeEngine::WebView2
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        RuntimeEngine::Cef
     }
 }
 
@@ -211,6 +236,7 @@ impl RuntimeInstallProgress {
 pub fn system_runtime_path(engine: RuntimeEngine) -> PathBuf {
     match engine {
         RuntimeEngine::Cef => PathBuf::from("/usr/lib/fenestra/cef"),
+        RuntimeEngine::WebView2 => webview2_default_install_dir(),
     }
 }
 
@@ -226,6 +252,35 @@ pub fn bundled_runtime_path(app_dir: &Path, engine: RuntimeEngine) -> PathBuf {
     app_dir.join("runtimes").join(engine.id())
 }
 
+/// Return the well-known Evergreen install directory for WebView2 on the
+/// current host. Always returns a path string; the caller is responsible
+/// for checking whether it exists. On non-Windows hosts, the path is
+/// fabricated (matching `%ProgramFiles(x86)%\Microsoft\EdgeWebView`) but
+/// is never consulted, since WebView2 is not a valid engine choice
+/// off-Windows.
+fn webview2_default_install_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(dir) = std::env::var_os("ProgramFiles(x86)").map(|root| {
+            PathBuf::from(root)
+                .join("Microsoft")
+                .join("EdgeWebView")
+                .join("Application")
+        }) {
+            return dir;
+        }
+        if let Some(root) = std::env::var_os("ProgramFiles").map(|root| {
+            PathBuf::from(root)
+                .join("Microsoft")
+                .join("EdgeWebView")
+                .join("Application")
+        }) {
+            return root;
+        }
+    }
+    PathBuf::from(r"C:\Program Files (x86)\Microsoft\EdgeWebView\Application")
+}
+
 pub fn runtime_version_path(
     engine: RuntimeEngine,
     package: RuntimePackage,
@@ -235,6 +290,9 @@ pub fn runtime_version_path(
 }
 
 pub fn detect_runtime(config: &RuntimeConfig) -> Vec<RuntimeInfo> {
+    if config.engine == RuntimeEngine::WebView2 {
+        return detect_webview2_runtime();
+    }
     let mut runtimes = Vec::new();
     collect_runtime_dirs(
         config.engine,
@@ -259,6 +317,109 @@ pub fn detect_runtime(config: &RuntimeConfig) -> Vec<RuntimeInfo> {
         );
     }
     runtimes
+}
+
+/// Detect the system-installed WebView2 (Evergreen) runtime. WebView2 is
+/// always system-managed, so we only probe the well-known install
+/// directory; the user-local and bundled locations are never consulted.
+///
+/// On non-Windows hosts, the function returns an empty list (WebView2 is
+/// Windows-only).
+fn detect_webview2_runtime() -> Vec<RuntimeInfo> {
+    let Some(base) = webview2_install_base() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&base) else {
+        return Vec::new();
+    };
+    let mut candidates: Vec<(Vec<u32>, PathBuf)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_dir() {
+                return None;
+            }
+            let name = path.file_name()?.to_str()?.to_string();
+            if !is_webview2_version_dir(&name) {
+                return None;
+            }
+            // WebView2 is "launchable" if `msedgewebview2.exe` is present
+            // inside the version directory. That confirms the runtime is
+            // actually usable, not just an empty leftover from a previous
+            // install.
+            if !path.join("msedgewebview2.exe").is_file() {
+                return None;
+            }
+            let sort_key: Vec<u32> = name
+                .split('.')
+                .filter_map(|part| part.parse::<u32>().ok())
+                .collect();
+            Some((sort_key, path))
+        })
+        .collect();
+    candidates.sort_by(|left, right| left.0.cmp(&right.0));
+    let Some((_, path)) = candidates.pop() else {
+        return Vec::new();
+    };
+    let version = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("unknown")
+        .to_string();
+    vec![RuntimeInfo {
+        engine: RuntimeEngine::WebView2,
+        package: RuntimePackage::Standard,
+        version,
+        location: RuntimeLocation::System(path),
+        verified: true,
+    }]
+}
+
+fn webview2_install_base() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        let candidates = [
+            std::env::var_os("ProgramFiles(x86)").map(|root| {
+                PathBuf::from(root)
+                    .join("Microsoft")
+                    .join("EdgeWebView")
+                    .join("Application")
+            }),
+            std::env::var_os("ProgramFiles").map(|root| {
+                PathBuf::from(root)
+                    .join("Microsoft")
+                    .join("EdgeWebView")
+                    .join("Application")
+            }),
+        ];
+        for candidate in candidates.into_iter().flatten() {
+            if candidate.is_dir() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn is_webview2_version_dir(name: &str) -> bool {
+    // WebView2 version directories look like "120.0.2210.91" (four
+    // dotted numeric components). Reject anything else so random
+    // subfolders ("EBWebView", "crashpad", etc.) don't get picked up.
+    let mut parts = name.split('.');
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    if first.is_empty() || !first.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    let mut count = 1;
+    for part in parts {
+        if part.is_empty() || !part.chars().all(|c| c.is_ascii_digit()) {
+            return false;
+        }
+        count += 1;
+    }
+    (3..=5).contains(&count)
 }
 
 pub fn resolve_runtime(config: &RuntimeConfig) -> Result<RuntimeInfo, RuntimeError> {
@@ -292,6 +453,11 @@ pub fn install_user_runtime_with_progress(
 ) -> Result<RuntimeInfo, RuntimeError> {
     if !config.allow_user_install {
         return Err(RuntimeError::DownloadsDisabled);
+    }
+    if config.engine.is_system_managed() {
+        return Err(RuntimeError::NotUserInstallable {
+            engine: config.engine.id(),
+        });
     }
     std::fs::create_dir_all(user_runtime_path(config.engine))?;
     let _lock = RuntimeInstallLock::acquire(config.engine, &mut progress)?;
@@ -388,6 +554,9 @@ pub fn prune_user_runtimes(
     config: &RuntimeConfig,
     keep_latest: usize,
 ) -> Result<usize, RuntimeError> {
+    if config.engine.is_system_managed() {
+        return Ok(0);
+    }
     std::fs::create_dir_all(user_runtime_path(config.engine))?;
     let _lock = RuntimeInstallLock::acquire(config.engine, |_| {})?;
     let base = user_runtime_path(config.engine);
@@ -415,6 +584,9 @@ pub fn remove_user_runtime_version(
     config: &RuntimeConfig,
     version: &str,
 ) -> Result<bool, RuntimeError> {
+    if config.engine.is_system_managed() {
+        return Ok(false);
+    }
     std::fs::create_dir_all(user_runtime_path(config.engine))?;
     let _lock = RuntimeInstallLock::acquire(config.engine, |_| {})?;
     let base = user_runtime_path(config.engine);
@@ -521,6 +693,11 @@ fn remove_user_minimal_runtime_if_client_requested_with_progress(
 }
 
 pub fn latest_install_plan(config: &RuntimeConfig) -> Result<RuntimeInstallPlan, RuntimeError> {
+    if config.engine.is_system_managed() {
+        return Err(RuntimeError::NotUserInstallable {
+            engine: config.engine.id(),
+        });
+    }
     let platform = cef_platform_key().ok_or_else(|| {
         RuntimeError::InstallationFailed("unsupported OS or CPU architecture for CEF".to_string())
     })?;
@@ -997,7 +1174,46 @@ mod tests {
     #[test]
     fn runtime_engine_round_trips() {
         assert_eq!(RuntimeEngine::Cef, RuntimeEngine::parse("cef").unwrap());
+        assert_eq!(
+            RuntimeEngine::WebView2,
+            RuntimeEngine::parse("webview2").unwrap()
+        );
+        assert_eq!(
+            RuntimeEngine::WebView2,
+            RuntimeEngine::parse("evergreen").unwrap()
+        );
         assert!(RuntimeEngine::parse("unknown").is_none());
+    }
+
+    #[test]
+    fn webview2_is_system_managed() {
+        assert!(!RuntimeEngine::Cef.is_system_managed());
+        assert!(RuntimeEngine::WebView2.is_system_managed());
+    }
+
+    #[test]
+    fn webview2_rejects_user_install() {
+        let mut config = RuntimeConfig::default();
+        config.engine = RuntimeEngine::WebView2;
+        config.allow_user_install = true;
+        let error = install_user_runtime(&config).unwrap_err();
+        assert!(matches!(error, RuntimeError::NotUserInstallable { .. }));
+    }
+
+    #[test]
+    fn webview2_install_plan_is_unavailable() {
+        let mut config = RuntimeConfig::default();
+        config.engine = RuntimeEngine::WebView2;
+        let error = latest_install_plan(&config).unwrap_err();
+        assert!(matches!(error, RuntimeError::NotUserInstallable { .. }));
+    }
+
+    #[test]
+    fn webview2_prune_and_remove_are_no_ops() {
+        let mut config = RuntimeConfig::default();
+        config.engine = RuntimeEngine::WebView2;
+        assert_eq!(prune_user_runtimes(&config, 0).unwrap(), 0);
+        assert!(!remove_user_runtime_version(&config, "120.0.0.0").unwrap());
     }
 
     #[test]

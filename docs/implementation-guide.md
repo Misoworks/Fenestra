@@ -11,6 +11,7 @@ bridge. Fenestra does not depend on Stuk; Stuk apps wire into Fenestra via `Fene
 | --- | --- |
 | `fenestra-runtime` | CEF runtime discovery, user-local installs, package metadata, pruning, and validation |
 | `fenestra-cef` | CEF window launch, OSR native host, bridge dispatch, lifecycle, activity leases, desktop services |
+| `fenestra-webview2` | WebView2 (Evergreen) backend for Windows: winit + `webview2-com 0.36`, bridge install via `AddScriptToExecuteOnDocumentCreated`, `add_NavigationStarting` for `fenestra://` URL interception, DWM backdrop / glass, dev-server probing |
 | `fenestra-cli` | `fenestra new`, source installs, runtime commands, and bundle staging |
 
 Runtime files are user-local by default:
@@ -345,23 +346,32 @@ toolchain and credentials. `--binary` packages a binary built by CI or a cross-c
 ## Platform Notes
 
 Fenestra exposes one cross-platform builder, `FenestraWindow`, on every supported target. The
-backend is CEF on Linux, Windows, and macOS, so the public API does not change between platforms.
+backend is CEF on Linux and macOS, and WebView2 (Evergreen) on Windows. The public API does not
+change between platforms.
 
 | Platform | Backend | Status |
 | --- | --- | --- |
 | Linux | CEF with OSR native host (Wayland-first) | Full transparency, blur, glass, shell surfaces |
-| Windows | CEF windowed | System chrome, frameless, dev workflow, runtime install |
+| Windows | WebView2 (Evergreen) via winit + `webview2-com 0.36` | System chrome, frameless, glass (DWM backdrop), dev workflow; structurally complete, awaiting Windows host validation |
 | macOS  | CEF windowed | System chrome, frameless, dev workflow, runtime install |
 
+On Windows, `FenestraWindow` is a type alias to `fenestra_webview2::WebView2Window`. App code on
+every host imports `fenestra_cef::FenestraWindow`; the CEF crate owns the alias and points it at
+the right backend for the host target. The WebView2 backend uses the same `fenestra-bridge`
+protocol as the CEF backend: `add_NavigationStarting` cancels `fenestra://bridge/...` and
+`fenestra://window/...` URLs, the bridge install script is registered once via
+`ICoreWebView2::AddScriptToExecuteOnDocumentCreated`, and bridge responses / activity emits are
+posted to the page via `ICoreWebView2::ExecuteScript`.
+
 OSR features (frameless transparent windows, blur regions, shell surfaces, layer-shell palettes)
-currently use the Linux Wayland host. On Windows and macOS the same `FenestraWindow` builder falls
-back to the windowed CEF host with native decorations; transparency-style modes still work, the
-compositor materials are skipped where the OS does not provide them.
+currently use the Linux Wayland host. On Windows the WebView2 backend covers transparency through
+DWM system backdrops (Mica / Acrylic / Tabbed on Windows 11 22H2+) and frameless windows; the
+shell-surface path is Linux-only. macOS uses the windowed CEF host with native decorations.
 
 `fenestra-cef` keeps Linux-only crates (`layershellev`, `ksni`, `ashpd`, `wayland-client`, `x11rb`)
 behind `cfg(target_os = "linux")` so a downstream app can build for Windows and macOS without
-pulling those dependencies. Use the same `fenestra_cef::FenestraWindow` API on every host; the crate
-selects the right backend internally.
+pulling those dependencies. `fenestra-webview2` is gated to `cfg(target_os = "windows")` and ships
+a non-Windows stub so the workspace still builds for cross-platform testing on Linux.
 
 CEF host build:
 

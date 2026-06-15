@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct BridgeCommand {
     pub name: String,
     pub params: serde_json::Value,
@@ -68,7 +68,7 @@ impl BridgeHandlers {
         self.handlers.keys().cloned().collect()
     }
 
-    pub(crate) fn dispatch(&self, command: BridgeCommand) -> BridgeResult {
+    pub fn dispatch(&self, command: BridgeCommand) -> BridgeResult {
         let Some(handler) = self.handlers.get(&command.name) else {
             return Err(BridgeError::new(format!(
                 "Bridge command `{}` is not registered",
@@ -152,14 +152,14 @@ impl BridgeRegistry {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct BridgeRuntime {
+pub struct BridgeRuntime {
     handlers: BridgeHandlers,
     registry: BridgeRegistry,
     security: WebViewSecurity,
 }
 
 impl BridgeRuntime {
-    pub(crate) fn new(
+    pub fn new(
         handlers: BridgeHandlers,
         registry: BridgeRegistry,
         security: WebViewSecurity,
@@ -171,12 +171,16 @@ impl BridgeRuntime {
         }
     }
 
-    pub(crate) fn dispatch(&self, command: BridgeCommand) -> BridgeResult {
+    pub fn dispatch(&self, command: BridgeCommand) -> BridgeResult {
         let descriptor = self.registry.descriptor(&command.name);
         validate_permissions(&self.security, &command, descriptor)?;
         validate_targets(&command, descriptor)?;
         validate_origin(&self.security, &command, descriptor)?;
         self.handlers.dispatch(command)
+    }
+
+    pub fn security(&self) -> &WebViewSecurity {
+        &self.security
     }
 }
 
@@ -306,7 +310,10 @@ fn origin_matches(origin: &str, allowed: &[String]) -> bool {
     })
 }
 
-fn current_bridge_targets() -> &'static [&'static str] {
+/// List of bridge targets this build reports to the page. The CEF and
+/// WebView2 backends set the host side of this; the bridge validation logic
+/// uses it to filter commands that have an explicit target list.
+pub fn current_bridge_targets() -> &'static [&'static str] {
     #[cfg(target_os = "linux")]
     return &["desktop", "linux"];
     #[cfg(target_os = "windows")]

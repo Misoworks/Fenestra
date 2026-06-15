@@ -21,6 +21,7 @@ readme = "README.md"
 
 [dependencies]
 fenestra-runtime.workspace = true
+fenestra-bridge.workspace = true
 futures-util.workspace = true
 libc.workspace = true
 pollster.workspace = true
@@ -39,3 +40,6 @@ ashpd.workspace = true
 ksni.workspace = true
 layershellev.workspace = true
 wayland-client.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+fenestra-webview2.workspace = true

@@ -1,0 +1,40 @@
+[package]
+name = "fenestra-webview2"
+description = "WebView2 (Evergreen) backend for Fenestra cross-platform webview windows on Windows"
+keywords = ["fenestra", "webview2", "chromium", "evergreen", "desktop"]
+categories = ["gui", "rendering", "web-programming"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
+
+[dependencies]
+fenestra-runtime.workspace = true
+fenestra-bridge.workspace = true
+pollster.workspace = true
+raw-window-handle.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+stuk-platform.workspace = true
+stuk-platform-shell.workspace = true
+thiserror.workspace = true
+winit.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+raw-window-handle = "0.6.2"
+webview2-com = "0.36"
+webview2-com-sys = "0.36"
+# Match `webview2-com 0.36`'s internal `windows 0.60` series. Mixing
+# `windows 0.62` here would result in two `windows` crates in the
+# dependency graph and a `Param<PCWSTR>` mismatch on every
+# `ICoreWebView2` call.
+windows = { version = "0.60", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Dwm",
+] }

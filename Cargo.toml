@@ -2,13 +2,17 @@
 resolver = "3"
 members = [
     "crates/fenestra-runtime",
+    "crates/fenestra-bridge",
     "crates/fenestra-cef",
+    "crates/fenestra-webview2",
     "crates/fenestra-cli",
     "examples/fenestra-notes",
 ]
 default-members = [
     "crates/fenestra-runtime",
+    "crates/fenestra-bridge",
     "crates/fenestra-cef",
+    "crates/fenestra-webview2",
     "crates/fenestra-cli",
     "examples/fenestra-notes",
 ]
@@ -26,7 +30,9 @@ categories = ["gui", "rendering"]
 
 [workspace.dependencies]
 fenestra-runtime = { path = "crates/fenestra-runtime", version = "0.1.0" }
+fenestra-bridge = { path = "crates/fenestra-bridge", version = "0.1.0" }
 fenestra-cef = { path = "crates/fenestra-cef", version = "0.1.0" }
+fenestra-webview2 = { path = "crates/fenestra-webview2", version = "0.1.0" }
 
 stuk-platform = { path = "../stuk/crates/stuk-platform", version = "0.1.0" }
 stuk-platform-shell = { path = "../stuk/crates/stuk-platform-shell", version = "0.1.0" }

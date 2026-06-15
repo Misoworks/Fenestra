@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "fenestra_bridge_js.h"
 #include "include/cef_app.h"
 #include "include/cef_parser.h"
 #include "include/cef_task.h"
@@ -155,47 +156,13 @@ std::string JsArray(const std::set<std::string>& values) {
 }
 
 std::string BridgeInstallScript(const std::set<std::string>& commands) {
-  return "(function(){"
-         "window.fenestra=window.fenestra||{};"
-         "if(window.fenestra.__nativeApiVersion===1)return;"
-         "window.fenestra.__nativeApiVersion=1;"
-         "const commands=new Set(" +
-         JsArray(commands) +
-         ");"
-         "const pending=new Map();const listeners=new Map();let nextId=1;"
-         "window.__fenestraBridgeResolve=function(id,ok,payload){"
-         "const entry=pending.get(String(id));if(!entry)return;"
-         "pending.delete(String(id));"
-         "if(ok){entry.resolve(payload);}else{entry.reject(new Error((payload&&payload.message)||'Fenestra bridge command failed'));}"
-         "};"
-         "window.__fenestraBridgeEmit=function(name,payload){"
-         "const set=listeners.get(String(name));if(set){for(const cb of Array.from(set)){queueMicrotask(()=>cb(payload));}}"
-         "window.dispatchEvent(new CustomEvent('fenestra:'+String(name),{detail:payload}));"
-         "};"
-         "const windowCommand=function(action){window.location.href='fenestra://window/'+action+'?at='+Date.now()+'-'+Math.random();};"
-         "window.fenestra.window=Object.assign(window.fenestra.window||{},"
-         "{show(){windowCommand('show');},hide(){windowCommand('hide');},focus(){windowCommand('focus');},"
-         "close(){windowCommand('close');},minimize(){windowCommand('minimize');},"
-         "maximize(){windowCommand('maximize');},toggleMaximize(){windowCommand('toggle-maximize');},"
-         "restore(){windowCommand('restore');}});"
-         "window.fenestra.bridge={__native:true,commands:Array.from(commands),listen(name,callback){"
-         "const key=String(name);let set=listeners.get(key);if(!set){set=new Set();listeners.set(key,set);}set.add(callback);"
-         "return()=>{set.delete(callback);if(!set.size)listeners.delete(key);};},invoke(name,params={}){"
-         "if(!commands.has(name))return Promise.reject(new Error('Fenestra bridge command not registered: '+name));"
-         "const id=String(nextId++);"
-         "const payload=encodeURIComponent(JSON.stringify(params));"
-         "const url='fenestra://bridge/'+encodeURIComponent(id)+'?name='+encodeURIComponent(name)+'&payload='+payload;"
-         "return new Promise((resolve,reject)=>{"
-         "pending.set(id,{resolve,reject});"
-         "setTimeout(()=>{if(pending.has(id)){pending.delete(id);reject(new Error('Fenestra bridge command timed out: '+name));}},60000);"
-         "window.location.href=url;"
-         "});"
-         "}};"
-         "window.fenestra.activity={begin(options={}){"
-         "return window.fenestra.bridge.invoke('fenestra.activity.begin',options).then(record=>{"
-         "let ended=false;return Object.assign({},record,{end(){if(ended)return Promise.resolve({id:record.id,ended:false});ended=true;return window.fenestra.bridge.invoke('fenestra.activity.end',{id:record.id});}});});},"
-         "list(){return window.fenestra.bridge.invoke('fenestra.activity.list');}};"
-         "})();";
+  // The canonical Fenestra bridge script is kept in
+  // crates/fenestra-bridge/src/web_bridge.js and embedded as
+  // FENESTRA_BRIDGE_JS_RAW by host.rs at C++ build time. We just need to
+  // set window.__fenestraBridgeCommands before executing the script.
+  std::string prelude =
+      "window.__fenestraBridgeCommands=" + JsArray(commands) + ";";
+  return prelude + FENESTRA_BRIDGE_JS_RAW;
 }
 
 bool ParseBridgeResponse(const std::string& line,
