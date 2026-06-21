@@ -207,8 +207,7 @@ JS body, no C++ copy to keep in sync.
     `window.fenestra.bridge.listen("tray.activate" | "globalShortcut.activate" | "singleInstance.activate", ...)`.
 - **macOS** — windowed CEF host, Xcode command-line tools.
   `DYLD_FALLBACK_LIBRARY_PATH` points at the CEF `Release` dir. As on
-  Linux, desktop services are gated to Linux; on macOS they come from
-  upstream `stuk-platform`.
+  Linux, desktop services are currently gated to Linux.
 - **Mobile** — `FenestraWindow::launch_or_install` returns
   `FenestraError::MobileSystemWebViewRequired` on Android and iOS; mobile
   targets are expected to use the OS webview directly.
@@ -508,10 +507,9 @@ command surface.
 
 ## Publishing
 
-The three public Fenestra crates ship from this repo: `fenestra-runtime`, `fenestra-cli`, and
-`fenestra-cef`. They depend on four upstream stuk crates (`stuk-platform`, `stuk-platform-shell`,
-`stuk-render`, `stuk-style`) that ship from the sibling [stuk](https://github.com/Misoworks/Stuk)
-repo.
+The public Fenestra crates ship from this repo: `fenestra-platform`, `fenestra-runtime`,
+`fenestra-cli`, and `fenestra-cef`. Fenestra owns its window, shell, region, and OSR rendering
+primitives directly; it does not depend on the sibling Stuk framework.
 
 Releases run automatically through GitHub Actions and crates.io
 [trusted publishing](https://crates.io/docs/trusted-publishing). Push a tag and

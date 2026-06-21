@@ -7,12 +7,12 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
+use fenestra_platform::ShellSurfaceKeyboardInteractivity;
 use layershellev::{
     DispatchMessage, LayerShellEvent, ReturnData, WindowState,
     calloop::channel::{self, Sender},
     reexport::wl_shm::{self, WlShm},
 };
-use stuk_platform_shell::ShellSurfaceKeyboardInteractivity;
 use wayland_client::{QueueHandle, protocol::wl_buffer::WlBuffer};
 
 use crate::{

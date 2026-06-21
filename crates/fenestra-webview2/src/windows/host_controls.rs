@@ -6,7 +6,7 @@
 
 #![cfg(target_os = "windows")]
 
-use stuk_platform::WindowBackgroundEffect;
+use fenestra_platform::WindowBackgroundEffect;
 use windows::Win32::{
     Foundation::HWND,
     UI::WindowsAndMessaging::{
@@ -89,9 +89,7 @@ pub(crate) fn apply_dwm_backdrop(hwnd: isize, config: &WebView2Config) -> WebVie
         }
         WindowBackgroundEffect::Blur => DWM_SYSTEMBACKDROP_TYPE(1),
         WindowBackgroundEffect::None
-        | WindowBackgroundEffect::Luca
-        | WindowBackgroundEffect::Niko
-        | WindowBackgroundEffect::Maris
+        | WindowBackgroundEffect::Glass
         | WindowBackgroundEffect::Vibrancy
         | WindowBackgroundEffect::HudWindow
         | WindowBackgroundEffect::Sidebar

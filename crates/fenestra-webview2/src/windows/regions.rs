@@ -21,7 +21,7 @@
 
 #![cfg(target_os = "windows")]
 
-use stuk_platform::WindowRegionRect;
+use fenestra_platform::WindowRegionRect;
 
 use crate::WebView2Result;
 

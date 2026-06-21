@@ -13,13 +13,14 @@
 use std::path::PathBuf;
 
 use fenestra_bridge::{BridgeHandlers, FenestraLaunchMetricsSnapshot};
-use fenestra_runtime::RuntimeInfo;
-use stuk_platform::{
+use fenestra_platform::{
     AutostartEntry, DeepLinkRegistration, GlobalShortcutRegistration, NativeMessagingHost,
     SingleInstancePolicy, TrayIcon, WindowBackgroundEffect, WindowRegion, WindowRegionRect,
     WindowRegions,
 };
+use fenestra_runtime::RuntimeInfo;
 
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct WebView2Window {
     pub config: WebView2Config,
@@ -105,7 +106,7 @@ impl WebView2Process {
             stages: Vec::new(),
         }
     }
-    pub fn take_desktop_events(&self) -> Vec<stuk_platform::PlatformEvent> {
+    pub fn take_desktop_events(&self) -> Vec<fenestra_platform::PlatformEvent> {
         Vec::new()
     }
 }
@@ -118,9 +119,9 @@ pub enum WebView2Error {
 
 pub type WebView2Result<T> = Result<T, WebView2Error>;
 
-// Re-export the stuk-platform types so the API surface is identical to the
+// Re-export the fenestra-platform types so the API surface is identical to the
 // CEF crate.
-pub use stuk_platform_shell::{
+pub use fenestra_platform::{
     ShellSurfaceAnchor, ShellSurfaceKeyboardInteractivity, ShellSurfaceLayer, ShellSurfaceMargin,
     ShellSurfaceOptions,
 };

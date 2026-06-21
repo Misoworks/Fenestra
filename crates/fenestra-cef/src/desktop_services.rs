@@ -12,13 +12,13 @@ use std::{
     time::Duration,
 };
 
-use futures_util::StreamExt;
-use ksni::blocking::TrayMethods;
-use stuk_platform::{
+use fenestra_platform::{
     AutostartEntry, DeepLinkRegistration, GlobalShortcutActivation, GlobalShortcutRegistration,
     NativeMessagingHost, PlatformEvent, SingleInstanceActivation, SingleInstancePolicy,
     TrayActivation, TrayIcon, TrayMenuItem,
 };
+use futures_util::StreamExt;
+use ksni::blocking::TrayMethods;
 
 type EventQueue = Arc<Mutex<Vec<PlatformEvent>>>;
 

@@ -7,12 +7,12 @@ use std::{
     },
 };
 
-use serde_json::Value;
-use stuk_platform::{WindowRegion, WindowRegionAdaptive, WindowRegionRect, WindowRegions};
-use stuk_platform_shell::{
+use fenestra_platform::{
     ShellSurfaceAnchor, ShellSurfaceKeyboardInteractivity, ShellSurfaceLayer, ShellSurfaceMargin,
     ShellSurfaceOptions,
 };
+use fenestra_platform::{WindowRegion, WindowRegionAdaptive, WindowRegionRect, WindowRegions};
+use serde_json::Value;
 
 use crate::{FenestraLifecyclePolicy, FenestraWindowControlAction, FenestraWindowControlRegion};
 
@@ -717,6 +717,18 @@ fn adaptive_to_json(adaptive: Option<&WindowRegionAdaptive>) -> Value {
                 "titlebar_height": titlebar_height,
             })
         }
+        Some(WindowRegionAdaptive::ContentAfterSidebarRoundedRight {
+            sidebar_width,
+            titlebar_height,
+            radius,
+        }) => {
+            serde_json::json!({
+                "kind": "content_after_sidebar_rounded_right",
+                "sidebar_width": sidebar_width,
+                "titlebar_height": titlebar_height,
+                "radius": radius,
+            })
+        }
         None => Value::Null,
     }
 }
@@ -767,6 +779,19 @@ fn adaptive_from_json(value: Option<&Value>) -> Option<WindowRegionAdaptive> {
                 .and_then(Value::as_i64)
                 .unwrap_or(0) as i32,
         }),
+        "content_after_sidebar_rounded_right" => {
+            Some(WindowRegionAdaptive::ContentAfterSidebarRoundedRight {
+                sidebar_width: value
+                    .get("sidebar_width")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0) as i32,
+                titlebar_height: value
+                    .get("titlebar_height")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0) as i32,
+                radius: value.get("radius").and_then(Value::as_i64).unwrap_or(0) as i32,
+            })
+        }
         _ => None,
     }
 }

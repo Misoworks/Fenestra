@@ -3,7 +3,7 @@
 //! Linux exposes a rich set of platform integrations (tray icons, global
 //! shortcuts, deep links, native messaging hosts, single-instance routing) via
 //! the `desktop_services` module. Other platforms ship their own equivalents
-//! through `stuk_platform` and do not need this Linux-specific wiring.
+//! through their native backends and do not need this Linux-specific wiring.
 //!
 //! These stubs let the rest of `fenestra-cef` compile and link on every
 //! platform without dragging in Linux-only dependencies.
@@ -13,7 +13,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use stuk_platform::{
+use fenestra_platform::{
     AutostartEntry, DeepLinkRegistration, GlobalShortcutRegistration, NativeMessagingHost,
     PlatformEvent, SingleInstancePolicy, TrayIcon,
 };

@@ -1,7 +1,5 @@
+use fenestra_platform::{ShellSurfaceAnchor, ShellSurfaceKeyboardInteractivity, ShellSurfaceLayer};
 use layershellev::reexport::{Anchor, KeyboardInteractivity, Layer};
-use stuk_platform_shell::{
-    ShellSurfaceAnchor, ShellSurfaceKeyboardInteractivity, ShellSurfaceLayer,
-};
 
 pub(super) fn layer_for_shell(layer: ShellSurfaceLayer) -> Layer {
     match layer {

@@ -1,5 +1,9 @@
 mod host;
 mod process_tree;
+#[allow(dead_code, unused_imports)]
+mod render;
+#[allow(dead_code)]
+mod style;
 
 #[cfg(target_os = "linux")]
 mod desktop_services;
@@ -56,6 +60,15 @@ pub use fenestra_bridge::{
 pub use fenestra_bridge::{
     FENESTRA_TRACE_ENV, FenestraLaunchMetric, FenestraLaunchMetricsSnapshot,
 };
+pub use fenestra_platform::{
+    AutostartEntry, DeepLinkRegistration, GlobalShortcutRegistration, NativeMessagingHost,
+    PlatformEvent, SingleInstancePolicy, TrayIcon, TrayMenuItem, WindowBackgroundEffect,
+    WindowRegion, WindowRegionRect, WindowRegions,
+};
+pub use fenestra_platform::{
+    ShellSurfaceAnchor, ShellSurfaceKeyboardInteractivity, ShellSurfaceLayer, ShellSurfaceMargin,
+    ShellSurfaceOptions,
+};
 pub use fenestra_runtime::{
     RuntimeConfig, RuntimeEngine, RuntimeError, RuntimeInfo, RuntimeInstallProgress,
     RuntimeInstallStep, RuntimeLocation, RuntimeMode, RuntimePackage, detect_runtime,
@@ -63,15 +76,6 @@ pub use fenestra_runtime::{
 };
 pub use host::{ensure_cef_host, ld_library_path, webview_cache_dir};
 use process_tree::{ManagedChild, prepare_child_command};
-pub use stuk_platform::{
-    AutostartEntry, DeepLinkRegistration, GlobalShortcutRegistration, NativeMessagingHost,
-    PlatformEvent, SingleInstancePolicy, TrayIcon, TrayMenuItem, WindowBackgroundEffect,
-    WindowRegion, WindowRegionRect, WindowRegions,
-};
-pub use stuk_platform_shell::{
-    ShellSurfaceAnchor, ShellSurfaceKeyboardInteractivity, ShellSurfaceLayer, ShellSurfaceMargin,
-    ShellSurfaceOptions,
-};
 use thiserror::Error;
 #[cfg(target_os = "linux")]
 use winit::{dpi::PhysicalPosition, event_loop::ActiveEventLoop};
@@ -215,8 +219,8 @@ impl FenestraWindowConfig {
 
 fn low_power_glass_requested() -> bool {
     env_flag("FENESTRA_LOW_POWER_GLASS")
-        || env_flag("STACCATO_LOW_POWER_MODE")
-        || std::env::var("STACCATO_POWER_PROFILE")
+        || env_flag("ASHER_LOW_POWER_MODE")
+        || std::env::var("ASHER_POWER_PROFILE")
             .map(|value| matches!(value.as_str(), "battery" | "low-power" | "power-saver"))
             .unwrap_or(false)
 }
@@ -397,12 +401,10 @@ pub struct CefWindow {
 /// the current host).
 ///
 /// String values are parsed through
-/// [`WindowBackgroundEffect::parse`](stuk_platform::WindowBackgroundEffect::parse),
+/// [`WindowBackgroundEffect::parse`](fenestra_platform::WindowBackgroundEffect::parse),
 /// so unknown names silently fall back to the platform default. The
-/// effect names live in `stuk-platform`; the Asher-specific ones
-/// (`luca`, `niko`, `maris`) are intentionally not surfaced through
-/// fenestra yet, but the parser still accepts them if you need to set
-/// them explicitly via `glass_effect` / `glass_material`.
+/// effect names live in Fenestra's platform primitives. Use `glass`
+/// for the Linux compositor-provided glass material.
 ///
 /// Default per platform (when the spec does not override the field):
 ///
@@ -445,14 +447,16 @@ impl GlassSpec {
     }
 
     pub(crate) fn resolve(self) -> WindowBackgroundEffect {
-        match stuk_platform::current_desktop_os() {
-            stuk_platform::PlatformOs::Windows => {
+        match fenestra_platform::current_desktop_os() {
+            fenestra_platform::PlatformOs::Windows => {
                 self.windows.unwrap_or(WindowBackgroundEffect::Acrylic)
             }
-            stuk_platform::PlatformOs::Macos => {
+            fenestra_platform::PlatformOs::Macos => {
                 self.macos.unwrap_or(WindowBackgroundEffect::Vibrancy)
             }
-            stuk_platform::PlatformOs::Linux => self.linux.unwrap_or(WindowBackgroundEffect::Blur),
+            fenestra_platform::PlatformOs::Linux => {
+                self.linux.unwrap_or(WindowBackgroundEffect::Blur)
+            }
             _ => WindowBackgroundEffect::None,
         }
     }
@@ -1975,10 +1979,10 @@ mod tests {
     fn glass_defaults_to_platform_native_material() {
         let window = FenestraWindow::new().glass();
         assert!(window.config.transparent);
-        let expected = match stuk_platform::current_desktop_os() {
-            stuk_platform::PlatformOs::Windows => WindowBackgroundEffect::Acrylic,
-            stuk_platform::PlatformOs::Macos => WindowBackgroundEffect::Vibrancy,
-            stuk_platform::PlatformOs::Linux => WindowBackgroundEffect::Blur,
+        let expected = match fenestra_platform::current_desktop_os() {
+            fenestra_platform::PlatformOs::Windows => WindowBackgroundEffect::Acrylic,
+            fenestra_platform::PlatformOs::Macos => WindowBackgroundEffect::Vibrancy,
+            fenestra_platform::PlatformOs::Linux => WindowBackgroundEffect::Blur,
             _ => WindowBackgroundEffect::None,
         };
         assert_eq!(window.config.background_effect, expected);
@@ -1991,9 +1995,9 @@ mod tests {
         let expected = if cfg!(target_os = "windows") {
             WindowBackgroundEffect::Mica
         } else {
-            match stuk_platform::current_desktop_os() {
-                stuk_platform::PlatformOs::Macos => WindowBackgroundEffect::Vibrancy,
-                stuk_platform::PlatformOs::Linux => WindowBackgroundEffect::Blur,
+            match fenestra_platform::current_desktop_os() {
+                fenestra_platform::PlatformOs::Macos => WindowBackgroundEffect::Vibrancy,
+                fenestra_platform::PlatformOs::Linux => WindowBackgroundEffect::Blur,
                 _ => WindowBackgroundEffect::None,
             }
         };
@@ -2003,10 +2007,10 @@ mod tests {
     #[test]
     fn glass_spec_drops_unknown_effect_names() {
         let window = FenestraWindow::new().glass_spec(GlassSpec::new().windows("sparkles"));
-        let expected = match stuk_platform::current_desktop_os() {
-            stuk_platform::PlatformOs::Windows => WindowBackgroundEffect::Acrylic,
-            stuk_platform::PlatformOs::Macos => WindowBackgroundEffect::Vibrancy,
-            stuk_platform::PlatformOs::Linux => WindowBackgroundEffect::Blur,
+        let expected = match fenestra_platform::current_desktop_os() {
+            fenestra_platform::PlatformOs::Windows => WindowBackgroundEffect::Acrylic,
+            fenestra_platform::PlatformOs::Macos => WindowBackgroundEffect::Vibrancy,
+            fenestra_platform::PlatformOs::Linux => WindowBackgroundEffect::Blur,
             _ => WindowBackgroundEffect::None,
         };
         assert_eq!(window.config.background_effect, expected);

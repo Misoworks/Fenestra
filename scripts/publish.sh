@@ -10,9 +10,6 @@
 #                                     # haven't been published to crates.io yet)
 #
 # Required:
-#   - The four upstream stuk-* crates that fenestra-cef depends on must
-#     already be on crates.io. Publish them first from the stuk repo with
-#     `stuk/scripts/publish.sh`.
 #   - A valid crates.io token (`cargo login <TOKEN>`).
 set -euo pipefail
 
@@ -31,6 +28,7 @@ done
 
 # Publishable crates in dependency order.
 CRATES=(
+  fenestra-platform
   fenestra-runtime
   fenestra-cli
   fenestra-cef

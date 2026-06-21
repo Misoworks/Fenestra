@@ -30,13 +30,13 @@ use fenestra_bridge::{
     BridgeCommand, BridgeCommandDescriptor, BridgeHandlers, BridgeRegistry, BridgeResult,
     WebViewSecurity,
 };
-use fenestra_runtime::RuntimeInfo;
-use stuk_platform::{
+use fenestra_platform::ShellSurfaceOptions;
+use fenestra_platform::{
     AutostartEntry, DeepLinkRegistration, GlobalShortcutRegistration, NativeMessagingHost,
     SingleInstancePolicy, TrayIcon, WindowBackgroundEffect, WindowRegion, WindowRegionRect,
     WindowRegions,
 };
-use stuk_platform_shell::ShellSurfaceOptions;
+use fenestra_runtime::RuntimeInfo;
 
 /// Re-export the shared window/region types so the API surface is
 /// identical to the CEF crate. App code that does
@@ -51,7 +51,7 @@ pub type WebView2GlobalShortcutRegistration = GlobalShortcutRegistration;
 pub type WebView2NativeMessagingHost = NativeMessagingHost;
 pub type WebView2SingleInstancePolicy = SingleInstancePolicy;
 pub type WebView2TrayIcon = TrayIcon;
-pub use stuk_platform_shell::{
+pub use fenestra_platform::{
     ShellSurfaceAnchor as WebView2ShellSurfaceAnchor,
     ShellSurfaceKeyboardInteractivity as WebView2ShellSurfaceKeyboardInteractivity,
     ShellSurfaceLayer as WebView2ShellSurfaceLayer,
@@ -265,8 +265,8 @@ impl WebView2Config {
 
 fn low_power_glass_requested() -> bool {
     env_flag("FENESTRA_LOW_POWER_GLASS")
-        || env_flag("STACCATO_LOW_POWER_MODE")
-        || std::env::var("STACCATO_POWER_PROFILE")
+        || env_flag("ASHER_LOW_POWER_MODE")
+        || std::env::var("ASHER_POWER_PROFILE")
             .map(|value| matches!(value.as_str(), "battery" | "low-power" | "power-saver"))
             .unwrap_or(false)
 }
@@ -293,12 +293,10 @@ pub struct WebView2Window {
 /// [`WebView2Window::glass_spec`].
 ///
 /// String values are parsed through
-/// [`WindowBackgroundEffect::parse`](stuk_platform::WindowBackgroundEffect::parse),
+/// [`WindowBackgroundEffect::parse`](fenestra_platform::WindowBackgroundEffect::parse),
 /// so unknown names silently fall back to the platform default. The
-/// effect names live in `stuk-platform`; the Asher-specific ones
-/// (`luca`, `niko`, `maris`) are intentionally not surfaced through
-/// fenestra yet, but the parser still accepts them if you need to set
-/// them explicitly via `glass_effect` / `glass_material`.
+/// effect names live in `fenestra-platform`. Use `glass` for the Linux
+/// compositor-provided glass material.
 ///
 /// Default per platform (when the spec does not override the field):
 ///
@@ -341,14 +339,16 @@ impl GlassSpec {
     }
 
     pub(crate) fn resolve(self) -> WindowBackgroundEffect {
-        match stuk_platform::current_desktop_os() {
-            stuk_platform::PlatformOs::Windows => {
+        match fenestra_platform::current_desktop_os() {
+            fenestra_platform::PlatformOs::Windows => {
                 self.windows.unwrap_or(WindowBackgroundEffect::Acrylic)
             }
-            stuk_platform::PlatformOs::Macos => {
+            fenestra_platform::PlatformOs::Macos => {
                 self.macos.unwrap_or(WindowBackgroundEffect::Vibrancy)
             }
-            stuk_platform::PlatformOs::Linux => self.linux.unwrap_or(WindowBackgroundEffect::Blur),
+            fenestra_platform::PlatformOs::Linux => {
+                self.linux.unwrap_or(WindowBackgroundEffect::Blur)
+            }
             _ => WindowBackgroundEffect::None,
         }
     }
@@ -710,7 +710,7 @@ impl WebView2Process {
         self.inner.metrics.snapshot()
     }
 
-    pub fn take_desktop_events(&self) -> Vec<stuk_platform::PlatformEvent> {
+    pub fn take_desktop_events(&self) -> Vec<fenestra_platform::PlatformEvent> {
         Vec::new()
     }
 }

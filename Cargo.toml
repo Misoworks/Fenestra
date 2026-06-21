@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/fenestra-platform",
     "crates/fenestra-runtime",
     "crates/fenestra-bridge",
     "crates/fenestra-cef",
@@ -9,6 +10,7 @@ members = [
     "examples/fenestra-notes",
 ]
 default-members = [
+    "crates/fenestra-platform",
     "crates/fenestra-runtime",
     "crates/fenestra-bridge",
     "crates/fenestra-cef",
@@ -30,17 +32,16 @@ categories = ["gui", "rendering"]
 
 [workspace.dependencies]
 fenestra-runtime = { path = "crates/fenestra-runtime", version = "0.1.0" }
+fenestra-platform = { path = "crates/fenestra-platform", version = "0.1.0" }
 fenestra-bridge = { path = "crates/fenestra-bridge", version = "0.1.0" }
 fenestra-cef = { path = "crates/fenestra-cef", version = "0.1.0" }
 fenestra-webview2 = { path = "crates/fenestra-webview2", version = "0.1.0" }
 
-stuk-platform = { path = "../stuk/crates/stuk-platform", version = "0.1.0" }
-stuk-platform-shell = { path = "../stuk/crates/stuk-platform-shell", version = "0.1.0" }
-stuk-render = { path = "../stuk/crates/stuk-render", version = "0.1.0" }
-stuk-style = { path = "../stuk/crates/stuk-style", version = "0.1.0" }
-
 ashpd = { version = "0.13.11", features = ["global_shortcuts"] }
+bytemuck = { version = "1.25.0", features = ["derive"] }
 futures-util = "0.3.31"
+glyphon = "0.11.0"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp"] }
 layershellev = "0.18.1"
 ksni = { version = "0.3.4", features = ["blocking"] }
 libc = "0.2.186"
@@ -53,5 +54,6 @@ thiserror = "2.0.18"
 tokio = { version = "1.48.0", features = ["rt", "sync", "time", "macros"] }
 toml = "1.1.2"
 wayland-client = "0.31.14"
+wgpu = "29.0.3"
 winit = "0.31.0-beta.2"
 x11rb = "0.13.2"

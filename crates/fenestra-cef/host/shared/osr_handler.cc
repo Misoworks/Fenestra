@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
@@ -466,6 +467,16 @@ int KeyCodeForName(const std::string& key) {
   if (key == "End") return 35;
   if (key == "PageUp") return 33;
   if (key == "PageDown") return 34;
+  if (key.size() >= 2 && key[0] == 'F') {
+    const std::string number = key.substr(1);
+    if (!number.empty() &&
+        std::all_of(number.begin(), number.end(), [](unsigned char c) { return std::isdigit(c); })) {
+      const int function_key = std::atoi(number.c_str());
+      if (function_key >= 1 && function_key <= 24) {
+        return 111 + function_key;
+      }
+    }
+  }
   return 0;
 }
 
@@ -1183,7 +1194,6 @@ void FenestraOsrHandler::HandleControlLine(const std::string& line) {
     event.type = pressed ? KEYEVENT_RAWKEYDOWN : KEYEVENT_KEYUP;
     event.modifiers = modifiers;
     event.windows_key_code = key_code;
-    event.native_key_code = key_code;
     host->SendKeyEvent(event);
     if (pressed && !text.empty()) {
       for (char16_t ch : Utf8ToUtf16(text)) {

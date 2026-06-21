@@ -9,15 +9,15 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use stuk_platform::{
+use crate::render::{
+    DisplayList, GpuRenderer, ImageCommand, RectCommand, RoundedRectCommand, TextCommand,
+};
+use crate::style::{Color, NumberSpacing, TextAlign, TextWrap};
+use fenestra_platform::ShellSurfaceOptions;
+use fenestra_platform::{
     WindowBackgroundEffect, WindowChrome as PlatformWindowChrome, WindowEffect, WindowOptions,
     WindowRegionRect, WindowRegions, request_window_effect,
 };
-use stuk_platform_shell::ShellSurfaceOptions;
-use stuk_render::{
-    DisplayList, GpuRenderer, ImageCommand, RectCommand, RoundedRectCommand, TextCommand,
-};
-use stuk_style::{Color, NumberSpacing, TextAlign, TextWrap};
 use winit::{
     application::ApplicationHandler,
     cursor::{Cursor, CursorIcon},
@@ -1368,12 +1368,14 @@ impl ApplicationHandler for OsrNativeHost {
                 self.cursor_x = position.x as f32 / scale.max(1.0);
                 self.cursor_y = position.y as f32 / scale.max(1.0);
                 self.update_titlebar_hover();
-                if let Some(direction) = resize_direction_at(
-                    self.cursor_x,
-                    self.cursor_y,
-                    self.logical_width(),
-                    self.logical_height(),
-                ) {
+                if self.config.resizable
+                    && let Some(direction) = resize_direction_at(
+                        self.cursor_x,
+                        self.cursor_y,
+                        self.logical_width(),
+                        self.logical_height(),
+                    )
+                {
                     self.set_native_cursor(CursorIcon::from(direction));
                 } else if self.hovered_control.is_some() {
                     self.set_native_cursor(CursorIcon::Pointer);
@@ -1418,12 +1420,14 @@ impl ApplicationHandler for OsrNativeHost {
                         if matches!(button, Some(MouseButton::Back | MouseButton::Forward)) {
                             return;
                         }
-                        if let Some(direction) = resize_direction_at(
-                            self.cursor_x,
-                            self.cursor_y,
-                            self.logical_width(),
-                            self.logical_height(),
-                        ) {
+                        if self.config.resizable
+                            && let Some(direction) = resize_direction_at(
+                                self.cursor_x,
+                                self.cursor_y,
+                                self.logical_width(),
+                                self.logical_height(),
+                            )
+                        {
                             let _ = window.drag_resize_window(direction);
                             return;
                         }
@@ -1874,7 +1878,7 @@ fn can_defer_window_visibility() -> bool {
 fn platform_chrome(chrome: FenestraWindowChrome) -> PlatformWindowChrome {
     match chrome {
         FenestraWindowChrome::System => PlatformWindowChrome::System,
-        FenestraWindowChrome::Fenestra => PlatformWindowChrome::Stuk,
+        FenestraWindowChrome::Fenestra => PlatformWindowChrome::Fenestra,
         FenestraWindowChrome::Frameless | FenestraWindowChrome::None => PlatformWindowChrome::None,
     }
 }
@@ -2056,6 +2060,10 @@ fn rect_contains(rect: ControlRect, x: f32, y: f32) -> bool {
 }
 
 fn resize_direction_at(x: f32, y: f32, width: f32, height: f32) -> Option<ResizeDirection> {
+    if width <= RESIZE_EDGE * 2.0 || height <= RESIZE_EDGE * 2.0 {
+        return None;
+    }
+
     let left = x <= RESIZE_EDGE;
     let right = x >= width - RESIZE_EDGE;
     let top = y <= RESIZE_EDGE;
