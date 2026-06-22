@@ -125,6 +125,11 @@ impl OsrLayerHost {
     fn new(config: OsrHostConfig, sender: Sender<LayerHostEvent>) -> Self {
         let surface_size = (config.width.max(1), config.height.max(1));
         let visible = config.visible;
+        let surface_alpha = if visible {
+            config.shell_surface_alpha.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         let focused = config.active;
         let lifecycle_state = if visible {
             LayerLifecycleState::Active
@@ -161,7 +166,7 @@ impl OsrLayerHost {
             focused,
             lifecycle_state,
             alpha_modifier: None,
-            surface_alpha: if visible { 1.0 } else { 0.0 },
+            surface_alpha,
         }
     }
 
@@ -299,6 +304,7 @@ impl OsrLayerHost {
         match event {
             LayerHostEvent::Connected(stream) => {
                 self.socket = Some(Arc::new(Mutex::new(stream)));
+                self.set_surface_alpha(self.surface_alpha, state);
                 self.send_resize();
                 self.force_current_lifecycle("connect");
                 if !self.visible {
@@ -539,15 +545,17 @@ impl OsrLayerHost {
     }
 
     fn show_surface(&mut self, state: &mut WindowState<()>) {
-        self.clear_frames();
-        self.set_surface_alpha(1.0, state);
         self.restore_keyboard(state);
         self.force_resume("visible");
         self.send_resize();
         if self.pointer_inside {
             self.forward_mouse_move(false);
         }
-        self.hide_surface(state);
+        if self.main_frame_ready() {
+            self.refresh_surface(state, None);
+        } else {
+            self.hide_surface(state);
+        }
     }
 
     fn hide_shell_surface(&mut self, state: &mut WindowState<()>) {
@@ -566,7 +574,7 @@ impl OsrLayerHost {
 
     fn set_surface_alpha(&mut self, alpha: f32, state: &WindowState<()>) {
         let alpha = alpha.clamp(0.0, 1.0);
-        if (self.surface_alpha - alpha).abs() <= 0.001 {
+        if self.alpha_modifier.is_some() && (self.surface_alpha - alpha).abs() <= 0.001 {
             return;
         }
         if self.alpha_modifier.is_none() {

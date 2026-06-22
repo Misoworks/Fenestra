@@ -103,6 +103,9 @@ pub(super) fn paint_frames_buffer_file(
     if !scratch.is_empty() {
         scratch.clear();
         scratch.shrink_to_fit();
+        write_full(file, main_buffer)?;
+        file.flush()?;
+        return Ok(DamageRect::full(width, height));
     }
 
     let damage = damage.unwrap_or_else(|| DamageRect::full(width, height));

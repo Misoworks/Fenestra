@@ -53,6 +53,7 @@ pub(crate) fn launch_process(
         "min_height": config.min_height,
         "resizable": config.resizable,
         "visible": config.visible,
+        "shell_surface_alpha": config.shell_surface_alpha,
         "active": config.active,
         "hide_on_blur": config.hide_on_blur,
         "always_on_top": config.always_on_top,
@@ -80,7 +81,7 @@ pub(crate) fn launch_process(
     command
         .arg(OSR_HOST_ARG)
         .arg(&host_config_path)
-        .stderr(Stdio::inherit());
+        .stderr(Stdio::null());
     prepare_bridge_command(&mut command, bridge_handlers);
     prepare_child_command(&mut command);
     let mut child = command
@@ -169,6 +170,7 @@ pub(crate) fn cef_osr_command(
     } else {
         command.stdout(Stdio::piped());
     }
+    command.stderr(Stdio::null());
     command
 }
 

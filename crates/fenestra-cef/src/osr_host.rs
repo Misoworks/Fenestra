@@ -85,6 +85,7 @@ pub(crate) struct OsrHostConfig {
     pub min_height: u32,
     pub resizable: bool,
     pub visible: bool,
+    pub shell_surface_alpha: f32,
     pub active: bool,
     pub hide_on_blur: bool,
     pub always_on_top: bool,
@@ -145,6 +146,11 @@ impl OsrHostConfig {
                 .get("visible")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(true),
+            shell_surface_alpha: value
+                .get("shell_surface_alpha")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(1.0)
+                .clamp(0.0, 1.0) as f32,
             active: value
                 .get("active")
                 .and_then(serde_json::Value::as_bool)

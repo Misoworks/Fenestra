@@ -149,6 +149,7 @@ pub struct FenestraWindowConfig {
     pub min_height: u32,
     pub resizable: bool,
     pub visible: bool,
+    pub shell_surface_alpha: f32,
     pub active: bool,
     pub hide_on_blur: bool,
     pub always_on_top: bool,
@@ -184,6 +185,7 @@ impl Default for FenestraWindowConfig {
             min_height: 280,
             resizable: true,
             visible: true,
+            shell_surface_alpha: 1.0,
             active: true,
             hide_on_blur: false,
             always_on_top: false,
@@ -848,6 +850,11 @@ impl CefWindow {
         if !visible {
             self.apply_hidden_lifecycle_defaults();
         }
+        self
+    }
+
+    pub fn shell_surface_alpha(mut self, alpha: f32) -> Self {
+        self.config.shell_surface_alpha = alpha.clamp(0.0, 1.0);
         self
     }
 
@@ -1556,6 +1563,7 @@ fn cef_window_command(
 fn prepare_bridge_command(command: &mut Command, _bridge_handlers: &BridgeHandlers) {
     command.stdin(Stdio::piped());
     command.stdout(Stdio::piped());
+    command.stderr(Stdio::null());
 }
 
 struct BridgeDispatch {
