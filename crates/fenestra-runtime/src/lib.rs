@@ -241,11 +241,32 @@ pub fn system_runtime_path(engine: RuntimeEngine) -> PathBuf {
 }
 
 pub fn user_runtime_path(engine: RuntimeEngine) -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(format!(
-        "{home}/.local/share/fenestra/runtimes/{}",
-        engine.id()
-    ))
+    user_data_dir()
+        .join("fenestra")
+        .join("runtimes")
+        .join(engine.id())
+}
+
+fn user_data_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            return PathBuf::from(local);
+        }
+        if let Some(profile) = std::env::var_os("USERPROFILE") {
+            return PathBuf::from(profile).join("AppData").join("Local");
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join("Library")
+                .join("Application Support");
+        }
+    }
+    let home = std::env::var_os("HOME").unwrap_or_else(|| std::ffi::OsString::from("/tmp"));
+    PathBuf::from(home).join(".local").join("share")
 }
 
 pub fn bundled_runtime_path(app_dir: &Path, engine: RuntimeEngine) -> PathBuf {

@@ -51,9 +51,21 @@
     window.dispatchEvent(new CustomEvent("fenestra:" + String(name), { detail: payload }));
   };
 
-  const windowCommand = function (action) {
+  const encodeQuery = function (params) {
+    const entries = [];
+    for (const key of Object.keys(params || {})) {
+      const value = params[key];
+      if (value === undefined || value === null) continue;
+      entries.push(encodeURIComponent(key) + "=" + encodeURIComponent(String(value)));
+    }
+    return entries.length ? "?" + entries.join("&") : "";
+  };
+
+  const windowCommand = function (action, params) {
     window.location.href =
-      "fenestra://window/" + action + "?at=" + Date.now() + "-" + Math.random();
+      "fenestra://window/" +
+      action +
+      encodeQuery(Object.assign({ at: Date.now() + "-" + Math.random() }, params || {}));
   };
 
   window.fenestra = window.fenestra || {};
@@ -120,4 +132,21 @@
     },
     list() { return window.fenestra.bridge.invoke("fenestra.activity.list"); },
   };
+
+  if (commands.has("fenestra.popup.open") && commands.has("fenestra.popup.close")) {
+    window.fenestra.popup = Object.assign(window.fenestra.popup || {}, {
+      open(options = {}) {
+        return window.fenestra.bridge.invoke("fenestra.popup.open", {
+          x: Math.round(Number(options.x) || 0),
+          y: Math.round(Number(options.y) || 0),
+          width: Math.max(1, Math.round(Number(options.width) || 1)),
+          height: Math.max(1, Math.round(Number(options.height) || 1)),
+          html: String(options.html || ""),
+        });
+      },
+      close() {
+        return window.fenestra.bridge.invoke("fenestra.popup.close");
+      },
+    });
+  }
 })();

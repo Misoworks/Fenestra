@@ -5,12 +5,12 @@ use std::{
 };
 
 use crate::{
-    BridgeHandlers, BridgeRuntime, FenestraError, FenestraProcess, FenestraResult,
-    FenestraWindowConfig, ld_library_path, prepare_bridge_command,
+    BridgeHandlers, FenestraError, FenestraProcess, FenestraResult, FenestraWindowConfig,
+    ld_library_path, prepare_bridge_command,
     process_tree::{ManagedChild, prepare_child_command},
     spawn_bridge_dispatch, webview_cache_dir,
 };
-use fenestra_bridge::LaunchMetrics;
+use fenestra_bridge::{BridgeRuntime, LaunchMetrics};
 
 pub(crate) const OSR_HOST_ARG: &str = "--fenestra-osr-host";
 
@@ -121,6 +121,7 @@ pub(crate) fn cef_osr_command(
     width: u32,
     height: u32,
     scale: f64,
+    active_frame_rate: u32,
 ) -> Command {
     let release_dir = runtime_dir.join("Release");
     let cache_dir = webview_cache_dir(&config.title, &config.url);
@@ -140,7 +141,7 @@ pub(crate) fn cef_osr_command(
         ))
         .arg(format!(
             "--fenestra-active-frame-rate={}",
-            config.lifecycle.active_frame_rate.max(1)
+            active_frame_rate.max(1)
         ))
         .arg(format!(
             "--fenestra-background-frame-rate={}",

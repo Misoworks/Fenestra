@@ -22,7 +22,8 @@ pub mod web_bridge;
 
 pub use activity::{
     ActivityEventEmitter, ActivityHostUpdate, ActivityOptions, ActivityRecord, ActivityRegistry,
-    FenestraActivityLease, bridge_commands_with_internal, host_update_json,
+    FenestraActivityLease, POPUP_CLOSE_COMMAND, POPUP_OPEN_COMMAND, bridge_commands_with_internal,
+    host_update_json,
 };
 pub use bridge::{
     BridgeCommand, BridgeCommandDescriptor, BridgeError, BridgeHandlers, BridgeRegistry,

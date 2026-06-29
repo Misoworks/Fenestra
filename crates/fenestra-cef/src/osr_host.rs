@@ -25,6 +25,7 @@ use winit::{
     event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     keyboard::Key,
+    monitor::MonitorHandle,
     platform::wayland::WindowAttributesWayland,
     window::{
         ActivationToken, ResizeDirection, UserAttentionType, Window as WinitWindow,
@@ -48,6 +49,7 @@ const CONTROL_SIZE: f32 = 24.0;
 const CONTROL_GAP: f32 = 8.0;
 const RESIZE_EDGE: f32 = 7.0;
 const CLOSE_GRACE: Duration = Duration::from_millis(300);
+const FALLBACK_ACTIVE_FRAME_RATE: u32 = 60;
 
 const EVENTFLAG_SHIFT_DOWN: u32 = 1 << 1;
 const EVENTFLAG_CONTROL_DOWN: u32 = 1 << 2;
@@ -393,6 +395,7 @@ impl OsrNativeHost {
             width,
             height,
             scale,
+            self.active_frame_rate(),
         );
         let child = match command.spawn() {
             Ok(child) => child,
@@ -482,7 +485,7 @@ impl OsrNativeHost {
 
     fn send_lifecycle(&self, state: LifecycleState, reason: &str) {
         let (name, frame_rate) = match state {
-            LifecycleState::Active => ("active", self.config.lifecycle.active_frame_rate.max(1)),
+            LifecycleState::Active => ("active", self.active_frame_rate()),
             LifecycleState::Suspended => (
                 "suspended",
                 self.config.lifecycle.background_frame_rate.max(1),
@@ -500,6 +503,17 @@ impl OsrNativeHost {
             &self.config,
             format!("lifecycle.{name}.{reason}.fps.{frame_rate}"),
         );
+    }
+
+    fn active_frame_rate(&self) -> u32 {
+        if self.config.lifecycle.active_frame_rate > 0 {
+            return self.config.lifecycle.active_frame_rate;
+        }
+        self.window
+            .as_ref()
+            .and_then(|window| window.current_monitor())
+            .and_then(monitor_frame_rate)
+            .unwrap_or(FALLBACK_ACTIVE_FRAME_RATE)
     }
 
     fn sync_lifecycle(&mut self, reason: &str) {
@@ -2111,6 +2125,18 @@ fn present_window(window: &Arc<dyn WinitWindow>) {
     window.request_user_attention(Some(UserAttentionType::Informational));
     window.focus_window();
     window.request_redraw();
+}
+
+fn monitor_frame_rate(monitor: MonitorHandle) -> Option<u32> {
+    monitor
+        .video_modes()
+        .filter_map(|mode| {
+            mode.refresh_rate_millihertz()
+                .map(|millihertz| millihertz.get())
+        })
+        .max()
+        .map(|millihertz| millihertz.saturating_add(999) / 1000)
+        .filter(|rate| *rate > 0)
 }
 
 fn cef_mouse_button(button: Option<MouseButton>) -> Option<&'static str> {

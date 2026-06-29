@@ -46,7 +46,6 @@ use std::{
 pub use desktop_services::{
     LinuxDesktopServiceState, apply_linux_desktop_services, start_desktop_event_forwarder,
 };
-pub(crate) use fenestra_bridge::BridgeRuntime;
 use fenestra_bridge::LaunchMetrics;
 pub use fenestra_bridge::{
     ActivityEventEmitter, ActivityHostUpdate, ActivityOptions, ActivityRecord,
@@ -102,7 +101,6 @@ pub(crate) fn apply_common_cef_args(command: &mut Command) {
     command
         .arg(format!("--disable-features={DISABLED_CEF_FEATURES}"))
         .arg("--disable-vulkan")
-        .arg("--disable-gpu")
         .arg("--disable-background-networking")
         .arg("--disable-component-update")
         .arg("--disable-component-extensions-with-background-pages")
@@ -243,19 +241,21 @@ pub struct FenestraLifecyclePolicy {
     pub suspend_on_blur: bool,
     pub hibernate_after: Option<Duration>,
     pub hibernate_grace: Duration,
+    pub retain_hidden_frame: bool,
 }
 
 #[cfg(not(target_os = "windows"))]
 impl Default for FenestraLifecyclePolicy {
     fn default() -> Self {
         Self {
-            active_frame_rate: 60,
+            active_frame_rate: 0,
             background_frame_rate: 5,
             suspend_on_minimize: true,
             suspend_on_occluded: true,
             suspend_on_blur: false,
             hibernate_after: None,
             hibernate_grace: Duration::from_millis(750),
+            retain_hidden_frame: false,
         }
     }
 }
@@ -275,6 +275,7 @@ impl FenestraLifecyclePolicy {
             background_frame_rate: 1,
             suspend_on_blur: true,
             hibernate_grace: Duration::from_millis(150),
+            retain_hidden_frame: true,
             ..Self::default()
         }
     }
@@ -282,6 +283,7 @@ impl FenestraLifecyclePolicy {
     pub fn memory_saver_hidden_window() -> Self {
         Self {
             hibernate_after: Some(Duration::from_secs(5)),
+            retain_hidden_frame: false,
             ..Self::hidden_window()
         }
     }
@@ -539,6 +541,12 @@ impl FenestraProcess {
             .is_some_and(|emitter| emitter.set_alpha(alpha))
     }
 
+    pub fn set_shell_surface_margin(&self, margin: ShellSurfaceMargin) -> bool {
+        self.bridge_emitter
+            .as_ref()
+            .is_some_and(|emitter| emitter.set_margin(margin))
+    }
+
     pub fn set_visible(&self, visible: bool) -> bool {
         self.bridge_emitter
             .as_ref()
@@ -665,6 +673,16 @@ impl BridgeEventEmitter {
 
     pub fn set_alpha(&self, alpha: f32) -> bool {
         self.emit_host_control("alpha", &format!("{:.4}", alpha.clamp(0.0, 1.0)))
+    }
+
+    pub fn set_margin(&self, margin: ShellSurfaceMargin) -> bool {
+        self.emit_host_control(
+            "margin",
+            &format!(
+                "{},{},{},{}",
+                margin.top, margin.right, margin.bottom, margin.left
+            ),
+        )
     }
 
     pub fn show(&self) -> bool {
@@ -1075,7 +1093,7 @@ impl CefWindow {
     }
 
     pub fn active_frame_rate(mut self, frame_rate: u32) -> Self {
-        self.config.lifecycle.active_frame_rate = frame_rate.max(1);
+        self.config.lifecycle.active_frame_rate = frame_rate;
         self
     }
 
@@ -1109,9 +1127,15 @@ impl CefWindow {
         self
     }
 
+    pub fn retain_hidden_frame(mut self, enabled: bool) -> Self {
+        self.config.lifecycle.retain_hidden_frame = enabled;
+        self
+    }
+
     fn apply_hidden_lifecycle_defaults(&mut self) {
         self.config.lifecycle.suspend_on_blur = true;
         self.config.lifecycle.background_frame_rate = 1;
+        self.config.lifecycle.retain_hidden_frame = true;
         self.config.lifecycle.hibernate_grace = self
             .config
             .lifecycle
@@ -1963,6 +1987,7 @@ mod tests {
         assert!(lifecycle.suspend_on_blur);
         assert_eq!(lifecycle.hibernate_after, None);
         assert_eq!(lifecycle.hibernate_grace, Duration::from_millis(150));
+        assert!(lifecycle.retain_hidden_frame);
     }
 
     #[test]
@@ -1972,6 +1997,7 @@ mod tests {
         assert!(lifecycle.suspend_on_blur);
         assert_eq!(lifecycle.hibernate_after, Some(Duration::from_secs(5)));
         assert_eq!(lifecycle.hibernate_grace, Duration::from_millis(150));
+        assert!(!lifecycle.retain_hidden_frame);
     }
 
     #[test]
@@ -1981,6 +2007,7 @@ mod tests {
         assert_eq!(window.config.lifecycle.background_frame_rate, 1);
         assert!(window.config.lifecycle.suspend_on_blur);
         assert_eq!(window.config.lifecycle.hibernate_after, None);
+        assert!(window.config.lifecycle.retain_hidden_frame);
     }
 
     #[test]

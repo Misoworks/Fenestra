@@ -207,9 +207,7 @@ std::string BridgeInstallScript(const std::set<std::string>& commands) {
 }
 
 std::string DataUri(const std::string& body) {
-  return "data:text/html;base64," +
-         CefURIEncode(CefBase64Encode(body.data(), body.size()), false)
-             .ToString();
+  return "data:text/html;base64," + CefBase64Encode(body.data(), body.size()).ToString();
 }
 
 bool ParseBridgeResponse(const std::string& line,
@@ -846,7 +844,12 @@ bool FenestraOsrHandler::OnContextMenuCommand(
 void FenestraOsrHandler::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
 	  CEF_REQUIRE_UI_THREAD();
 	  browsers_.push_back(browser);
-	  browser_ = browser;
+  if (native_popup_pending_ && browser_ && !browser_->IsSame(browser)) {
+    native_popup_browser_ = browser;
+    native_popup_pending_ = false;
+  } else {
+    browser_ = browser;
+  }
 	  browser->GetHost()->SetWindowlessFrameRate(active_frame_rate_);
 	}
 
@@ -860,6 +863,12 @@ bool FenestraOsrHandler::DoClose(CefRefPtr<CefBrowser> browser) {
 
 void FenestraOsrHandler::OnBeforeClose(CefRefPtr<CefBrowser> browser) {
   CEF_REQUIRE_UI_THREAD();
+  if (IsNativePopupBrowser(browser)) {
+    native_popup_browser_ = nullptr;
+    native_popup_url_.clear();
+    native_popup_pending_ = false;
+    SendMessage(3, 0, 0, 0, 0, nullptr, 0);
+  }
   for (auto it = browsers_.begin(); it != browsers_.end(); ++it) {
     if ((*it)->IsSame(browser)) {
       browsers_.erase(it);
@@ -878,6 +887,12 @@ void FenestraOsrHandler::OnLoadError(CefRefPtr<CefBrowser> browser,
                                  const CefString& failedUrl) {
   CEF_REQUIRE_UI_THREAD();
   if (errorCode == ERR_ABORTED) {
+    return;
+  }
+  if (IsNativePopupBrowser(browser)) {
+    std::cerr << "native popup load failed: " << errorText.ToString()
+              << " url=" << failedUrl.ToString() << std::endl;
+    CloseNativePopup();
     return;
   }
   std::stringstream body;
@@ -923,16 +938,28 @@ bool FenestraOsrHandler::GetScreenInfo(CefRefPtr<CefBrowser> browser,
   screen_info.device_scale_factor = scale_;
   screen_info.depth = 32;
   screen_info.depth_per_component = 8;
+  if (IsNativePopupBrowser(browser)) {
+    screen_info.rect = CefRect(0, 0, native_popup_rect_.width, native_popup_rect_.height);
+    screen_info.available_rect = screen_info.rect;
+    return true;
+  }
   screen_info.rect = CefRect(0, 0, width_, height_);
   screen_info.available_rect = CefRect(0, 0, width_, height_);
   return true;
 }
 
 void FenestraOsrHandler::GetViewRect(CefRefPtr<CefBrowser> browser, CefRect& rect) {
+  if (IsNativePopupBrowser(browser)) {
+    rect = CefRect(0, 0, native_popup_rect_.width, native_popup_rect_.height);
+    return;
+  }
   rect = CefRect(0, 0, width_, height_);
 }
 
 void FenestraOsrHandler::OnPopupShow(CefRefPtr<CefBrowser> browser, bool show) {
+  if (IsNativePopupBrowser(browser)) {
+    return;
+  }
   if (!show) {
     SendMessage(3, 0, 0, 0, 0, nullptr, 0);
   }
@@ -940,6 +967,9 @@ void FenestraOsrHandler::OnPopupShow(CefRefPtr<CefBrowser> browser, bool show) {
 
 void FenestraOsrHandler::OnPopupSize(CefRefPtr<CefBrowser> browser,
                                  const CefRect& rect) {
+  if (IsNativePopupBrowser(browser)) {
+    return;
+  }
   if (popup_rect_.x != rect.x || popup_rect_.y != rect.y ||
       popup_rect_.width != rect.width || popup_rect_.height != rect.height) {
     SendMessage(3, 0, 0, 0, 0, nullptr, 0);
@@ -953,6 +983,20 @@ void FenestraOsrHandler::OnPaint(CefRefPtr<CefBrowser> browser,
 	                             const void* buffer,
 	                             int width,
 	                             int height) {
+  if (IsNativePopupBrowser(browser)) {
+    if (!native_popup_visible_) {
+      native_popup_visible_ = true;
+      EmitBridgeEvent("\"popup.open\"", "{}");
+    }
+    SendPaintBatch(kPopupFrame,
+                   native_popup_rect_.x,
+                   native_popup_rect_.y,
+                   buffer,
+                   width,
+                   height,
+                   dirtyRects);
+    return;
+  }
 	  if (suspended_) {
 	    return;
 	  }
@@ -996,6 +1040,85 @@ std::string JsonEscape(const std::string& value) {
     }
   }
   return output;
+}
+
+std::string JsonStringValue(const std::string& payload, const std::string& name) {
+  const std::string needle = "\"" + name + "\"";
+  size_t cursor = payload.find(needle);
+  if (cursor == std::string::npos) {
+    return "";
+  }
+  cursor = payload.find(':', cursor + needle.size());
+  if (cursor == std::string::npos) {
+    return "";
+  }
+  cursor = payload.find('"', cursor + 1);
+  if (cursor == std::string::npos) {
+    return "";
+  }
+  std::string output;
+  for (++cursor; cursor < payload.size(); ++cursor) {
+    const char c = payload[cursor];
+    if (c == '"') {
+      break;
+    }
+    if (c != '\\' || cursor + 1 >= payload.size()) {
+      output += c;
+      continue;
+    }
+    const char escaped = payload[++cursor];
+    switch (escaped) {
+      case '"':
+      case '\\':
+      case '/':
+        output += escaped;
+        break;
+      case 'n':
+        output += '\n';
+        break;
+      case 'r':
+        output += '\r';
+        break;
+      case 't':
+        output += '\t';
+        break;
+      default:
+        output += escaped;
+        break;
+    }
+  }
+  return output;
+}
+
+int JsonIntValue(const std::string& payload,
+                 const std::string& name,
+                 int fallback) {
+  const std::string needle = "\"" + name + "\"";
+  size_t cursor = payload.find(needle);
+  if (cursor == std::string::npos) {
+    return fallback;
+  }
+  cursor = payload.find(':', cursor + needle.size());
+  if (cursor == std::string::npos) {
+    return fallback;
+  }
+  ++cursor;
+  while (cursor < payload.size() &&
+         std::isspace(static_cast<unsigned char>(payload[cursor]))) {
+    ++cursor;
+  }
+  size_t end = cursor;
+  if (end < payload.size() && payload[end] == '-') {
+    ++end;
+  }
+  while (end < payload.size() &&
+         std::isdigit(static_cast<unsigned char>(payload[end]))) {
+    ++end;
+  }
+  if (end == cursor) {
+    return fallback;
+  }
+  return std::atoi(payload.substr(cursor, end - cursor).c_str());
 }
 
 std::string FileUriToPath(const std::string& value) {
@@ -1116,7 +1239,25 @@ void FenestraOsrHandler::HandleControlLine(const std::string& line) {
   if (parts.empty() || !browser_) {
     return;
   }
-  CefRefPtr<CefBrowserHost> host = browser_->GetHost();
+  CefRefPtr<CefBrowser> target_browser = browser_;
+  int pointer_x = parts.size() >= 3 ? std::atoi(parts[1].c_str()) : 0;
+  int pointer_y = parts.size() >= 3 ? std::atoi(parts[2].c_str()) : 0;
+  const bool pointer_in_popup =
+      native_popup_browser_ &&
+      pointer_x >= native_popup_rect_.x &&
+      pointer_y >= native_popup_rect_.y &&
+      pointer_x < native_popup_rect_.x + native_popup_rect_.width &&
+      pointer_y < native_popup_rect_.y + native_popup_rect_.height;
+  if (pointer_in_popup &&
+      (parts[0] == "mouse_move" || parts[0] == "mouse_click" ||
+       parts[0] == "mouse_wheel" || parts[0] == "mouse_navigation")) {
+    target_browser = native_popup_browser_;
+    pointer_x -= native_popup_rect_.x;
+    pointer_y -= native_popup_rect_.y;
+  } else if (native_popup_browser_ && parts[0] == "mouse_click") {
+    CloseNativePopup();
+  }
+  CefRefPtr<CefBrowserHost> host = target_browser->GetHost();
   if (parts[0] == "resize" && parts.size() >= 4) {
     width_ = std::max(1, std::atoi(parts[1].c_str()));
     height_ = std::max(1, std::atoi(parts[2].c_str()));
@@ -1125,14 +1266,14 @@ void FenestraOsrHandler::HandleControlLine(const std::string& line) {
     host->WasResized();
   } else if (parts[0] == "mouse_move" && parts.size() >= 5) {
     CefMouseEvent event;
-    event.x = std::atoi(parts[1].c_str());
-    event.y = std::atoi(parts[2].c_str());
+    event.x = pointer_x;
+    event.y = pointer_y;
     event.modifiers = std::strtoul(parts[3].c_str(), nullptr, 10);
     host->SendMouseMoveEvent(event, std::atoi(parts[4].c_str()) != 0);
   } else if (parts[0] == "mouse_click" && parts.size() >= 7) {
     CefMouseEvent event;
-    event.x = std::atoi(parts[1].c_str());
-    event.y = std::atoi(parts[2].c_str());
+    event.x = pointer_x;
+    event.y = pointer_y;
     const auto button = MouseButtonFromString(parts[3]);
     event.modifiers = std::strtoul(parts[4].c_str(), nullptr, 10);
     const bool up = std::atoi(parts[5].c_str()) != 0;
@@ -1151,11 +1292,12 @@ void FenestraOsrHandler::HandleControlLine(const std::string& line) {
           ((event.modifiers & (1 << 3)) ? "true" : "false") + ",metaKey:" +
           ((event.modifiers & (1 << 7)) ? "true" : "false") +
           "};target.dispatchEvent(new MouseEvent('contextmenu',init));})();";
-      browser_->GetMainFrame()->ExecuteJavaScript(script, browser_->GetMainFrame()->GetURL(), 0);
+      target_browser->GetMainFrame()->ExecuteJavaScript(
+          script, target_browser->GetMainFrame()->GetURL(), 0);
     }
   } else if (parts[0] == "mouse_navigation" && parts.size() >= 5) {
-    const int x = std::atoi(parts[1].c_str());
-    const int y = std::atoi(parts[2].c_str());
+    const int x = pointer_x;
+    const int y = pointer_y;
     const int button = std::atoi(parts[3].c_str());
     const uint32_t modifiers = std::strtoul(parts[4].c_str(), nullptr, 10);
     const std::string script =
@@ -1175,11 +1317,12 @@ void FenestraOsrHandler::HandleControlLine(const std::string& line) {
         std::to_string(button) +
         "===3)history.back();else if(" + std::to_string(button) +
         "===4)history.forward();}})();";
-    browser_->GetMainFrame()->ExecuteJavaScript(script, browser_->GetMainFrame()->GetURL(), 0);
+    target_browser->GetMainFrame()->ExecuteJavaScript(
+        script, target_browser->GetMainFrame()->GetURL(), 0);
   } else if (parts[0] == "mouse_wheel" && parts.size() >= 6) {
     CefMouseEvent event;
-    event.x = std::atoi(parts[1].c_str());
-    event.y = std::atoi(parts[2].c_str());
+    event.x = pointer_x;
+    event.y = pointer_y;
     const int dx = std::atoi(parts[3].c_str());
     const int dy = std::atoi(parts[4].c_str());
     event.modifiers = std::strtoul(parts[5].c_str(), nullptr, 10);
@@ -1292,6 +1435,72 @@ bool FenestraOsrHandler::HandleWindowCommand(CefRefPtr<CefBrowser> browser,
   return true;
 }
 
+bool FenestraOsrHandler::IsNativePopupBrowser(CefRefPtr<CefBrowser> browser) const {
+  if (!browser) {
+    return false;
+  }
+  if (native_popup_browser_ && native_popup_browser_->IsSame(browser)) {
+    return true;
+  }
+  if (!native_popup_pending_ || native_popup_url_.empty()) {
+    return false;
+  }
+  if (browser_ && browser_->IsSame(browser)) {
+    return false;
+  }
+  CefRefPtr<CefFrame> frame = browser->GetMainFrame();
+  return frame && std::string(frame->GetURL()) == native_popup_url_;
+}
+
+bool FenestraOsrHandler::OpenNativePopup(const std::string& html,
+                                         int x,
+                                         int y,
+                                         int width,
+                                         int height) {
+  CEF_REQUIRE_UI_THREAD();
+  if (html.empty()) {
+    CloseNativePopup();
+    return false;
+  }
+  CloseNativePopup();
+  native_popup_rect_ = CefRect(x, y, std::max(1, width), std::max(1, height));
+  native_popup_pending_ = true;
+  native_popup_visible_ = false;
+  native_popup_url_ = DataUri(html);
+
+  CefBrowserSettings browser_settings;
+  browser_settings.windowless_frame_rate = std::max(1, active_frame_rate_);
+  browser_settings.background_color = CefColorSetARGB(0, 0, 0, 0);
+
+  CefWindowInfo window_info;
+  window_info.SetAsWindowless(kNullWindowHandle);
+  const bool created = CefBrowserHost::CreateBrowser(
+      window_info, this, native_popup_url_, browser_settings, nullptr, nullptr);
+  if (!created) {
+    native_popup_pending_ = false;
+    native_popup_visible_ = false;
+    native_popup_url_.clear();
+  }
+  return created;
+}
+
+void FenestraOsrHandler::CloseNativePopup() {
+  CEF_REQUIRE_UI_THREAD();
+  const bool had_popup = native_popup_pending_ || native_popup_browser_;
+  native_popup_pending_ = false;
+  native_popup_visible_ = false;
+  native_popup_url_.clear();
+  if (native_popup_browser_) {
+    CefRefPtr<CefBrowser> popup = native_popup_browser_;
+    native_popup_browser_ = nullptr;
+    popup->GetHost()->CloseBrowser(true);
+  }
+  if (had_popup) {
+    EmitBridgeEvent("\"popup.close\"", "{}");
+  }
+  SendMessage(3, 0, 0, 0, 0, nullptr, 0);
+}
+
 bool FenestraOsrHandler::HandleBridgeCommand(CefRefPtr<CefBrowser> browser,
                                          CefRefPtr<CefFrame> frame,
                                          const std::string& url) {
@@ -1307,6 +1516,25 @@ bool FenestraOsrHandler::HandleBridgeCommand(CefRefPtr<CefBrowser> browser,
   if (request_id.empty() || command.empty()) {
     ResolveBridgeResponse(browser_id, request_id, false,
                           "{\"message\":\"Malformed Fenestra bridge request\"}");
+    return true;
+  }
+  if (command == "fenestra.popup.open") {
+    const bool opened = OpenNativePopup(JsonStringValue(payload, "html"),
+                                        JsonIntValue(payload, "x", 0),
+                                        JsonIntValue(payload, "y", 0),
+                                        JsonIntValue(payload, "width", 1),
+                                        JsonIntValue(payload, "height", 1));
+    if (!opened) {
+      ResolveBridgeResponse(browser_id, request_id, false,
+                            "{\"message\":\"Failed to create native popup\"}");
+      return true;
+    }
+    ResolveBridgeResponse(browser_id, request_id, true, "{\"accepted\":true}");
+    return true;
+  }
+  if (command == "fenestra.popup.close") {
+    CloseNativePopup();
+    ResolveBridgeResponse(browser_id, request_id, true, "{}");
     return true;
   }
   if (!bridge_commands_.contains(command)) {

@@ -19,6 +19,18 @@ pub fn request_window_effect(
     wayland_background_effect::request(window, options)
 }
 
+pub fn request_surface_effect<W>(
+    window: &W,
+    options: &WindowOptions,
+    width: i32,
+    height: i32,
+) -> Option<WindowEffect>
+where
+    W: raw_window_handle::HasDisplayHandle + raw_window_handle::HasWindowHandle + ?Sized,
+{
+    wayland_background_effect::request_surface(window, options, width, height)
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PlatformOs {
     Linux,

@@ -22,6 +22,24 @@ use wayland_background_effect_protocol::*;
 
 #[cfg(target_os = "linux")]
 pub fn request(window: &Arc<dyn Window>, options: &WindowOptions) -> Option<WaylandEffect> {
+    request_surface(
+        window.as_ref(),
+        options,
+        options.width as i32,
+        options.height as i32,
+    )
+}
+
+#[cfg(target_os = "linux")]
+pub fn request_surface<W>(
+    window: &W,
+    options: &WindowOptions,
+    width: i32,
+    height: i32,
+) -> Option<WaylandEffect>
+where
+    W: HasDisplayHandle + HasWindowHandle + ?Sized,
+{
     let wants_blur =
         options.transparent && options.background_effect != WindowBackgroundEffect::None;
     if !wants_blur && options.regions.is_empty() {
@@ -42,8 +60,8 @@ pub fn request(window: &Arc<dyn Window>, options: &WindowOptions) -> Option<Wayl
             display,
             surface,
             options.background_effect,
-            options.width as i32,
-            options.height as i32,
+            width,
+            height,
             wants_blur,
             options,
         )
@@ -52,6 +70,19 @@ pub fn request(window: &Arc<dyn Window>, options: &WindowOptions) -> Option<Wayl
 
 #[cfg(not(target_os = "linux"))]
 pub fn request(_window: &Arc<dyn Window>, _options: &WindowOptions) -> Option<WaylandEffect> {
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn request_surface<W>(
+    _window: &W,
+    _options: &WindowOptions,
+    _width: i32,
+    _height: i32,
+) -> Option<WaylandEffect>
+where
+    W: ?Sized,
+{
     None
 }
 
@@ -118,7 +149,10 @@ impl WaylandEffect {
 }
 
 #[cfg(target_os = "linux")]
-fn wayland_display(window: &Arc<dyn Window>) -> Option<*mut WlDisplay> {
+fn wayland_display<W>(window: &W) -> Option<*mut WlDisplay>
+where
+    W: HasDisplayHandle + ?Sized,
+{
     match window.display_handle().ok()?.as_raw() {
         RawDisplayHandle::Wayland(display) => Some(display.display.as_ptr().cast()),
         _ => None,
@@ -126,7 +160,10 @@ fn wayland_display(window: &Arc<dyn Window>) -> Option<*mut WlDisplay> {
 }
 
 #[cfg(target_os = "linux")]
-fn wayland_surface(window: &Arc<dyn Window>) -> Option<*mut WlProxy> {
+fn wayland_surface<W>(window: &W) -> Option<*mut WlProxy>
+where
+    W: HasWindowHandle + ?Sized,
+{
     match window.window_handle().ok()?.as_raw() {
         RawWindowHandle::Wayland(surface) => Some(surface.surface.as_ptr().cast()),
         _ => None,

@@ -244,7 +244,6 @@ void FenestraApp::OnBeforeCommandLineProcessing(
   command_line->AppendSwitchWithValue(
       "disable-features",
       "Vulkan,DefaultANGLEVulkan,VulkanFromANGLE,OptimizationGuideOnDeviceModel");
-  command_line->AppendSwitch("disable-gpu");
   command_line->AppendSwitchWithValue("password-store", "basic");
   if (command_line->HasSwitch("fenestra-transparent")) {
     command_line->AppendSwitch("enable-transparent-visuals");

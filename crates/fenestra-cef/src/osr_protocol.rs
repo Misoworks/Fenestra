@@ -389,17 +389,6 @@ fn close_optional_fd(fd: Option<i32>) {
     }
 }
 
-pub(crate) fn absolute_batch_frame(batch: &OsrPaintBatch, frame: &OsrFrame) -> OsrFrame {
-    OsrFrame {
-        surface: frame.surface,
-        width: frame.width,
-        height: frame.height,
-        x: batch.x + frame.x,
-        y: batch.y + frame.y,
-        bytes: frame.bytes.clone(),
-    }
-}
-
 pub(crate) fn regions_to_json(regions: &WindowRegions) -> Value {
     serde_json::json!({
         "blur": region_to_json(regions.blur.as_ref()),
@@ -463,13 +452,14 @@ pub(crate) fn control_regions_from_json(value: Option<&Value>) -> Vec<FenestraWi
 
 pub(crate) fn lifecycle_to_json(lifecycle: &FenestraLifecyclePolicy) -> Value {
     serde_json::json!({
-        "active_frame_rate": lifecycle.active_frame_rate.max(1),
+        "active_frame_rate": lifecycle.active_frame_rate,
         "background_frame_rate": lifecycle.background_frame_rate.max(1),
         "suspend_on_minimize": lifecycle.suspend_on_minimize,
         "suspend_on_occluded": lifecycle.suspend_on_occluded,
         "suspend_on_blur": lifecycle.suspend_on_blur,
         "hibernate_after_ms": lifecycle.hibernate_after.map(duration_millis),
         "hibernate_grace_ms": duration_millis(lifecycle.hibernate_grace),
+        "retain_hidden_frame": lifecycle.retain_hidden_frame,
     })
 }
 
@@ -481,7 +471,7 @@ pub(crate) fn lifecycle_from_json(value: Option<&Value>) -> FenestraLifecyclePol
     lifecycle.active_frame_rate = value
         .get("active_frame_rate")
         .and_then(Value::as_u64)
-        .map(|value| value.max(1) as u32)
+        .map(|value| value.min(u32::MAX as u64) as u32)
         .unwrap_or(lifecycle.active_frame_rate);
     lifecycle.background_frame_rate = value
         .get("background_frame_rate")
@@ -511,6 +501,10 @@ pub(crate) fn lifecycle_from_json(value: Option<&Value>) -> FenestraLifecyclePol
         .filter(|value| *value > 0)
         .map(Duration::from_millis)
         .unwrap_or(lifecycle.hibernate_grace);
+    lifecycle.retain_hidden_frame = value
+        .get("retain_hidden_frame")
+        .and_then(Value::as_bool)
+        .unwrap_or(lifecycle.retain_hidden_frame);
     lifecycle
 }
 

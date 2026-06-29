@@ -191,6 +191,7 @@ fn host_source_fingerprint() -> String {
         HOST_HANDLER_CC,
         HOST_OSR_HANDLER_H,
         HOST_OSR_HANDLER_CC,
+        INSTALL_SCRIPT,
     ] {
         for byte in body.as_bytes() {
             hash ^= u64::from(*byte);

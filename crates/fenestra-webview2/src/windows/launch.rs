@@ -31,7 +31,9 @@
 //    dev server has a chance to start).
 // 8. `webview.Navigate(url)`. WebView2 repaints itself; winit only
 //    drives window events.
-// 9. Run the winit event loop. The loop processes `winit::Event`s
+// 9. Run the winit event loop. Window and WebView2 creation happen in
+//    `ApplicationHandler::can_create_surfaces` — winit 0.31 does not call
+//    `resumed` on Windows. The loop processes `winit::Event`s plus user
 //    plus user events delivered via an `mpsc` channel
 //    (`WebView2UserEvent`) that the app's `about_to_wait` callback
 //    drains. The winit 0.31 API does not support typed user events
@@ -148,9 +150,7 @@ struct LaunchApp {
 }
 
 impl ApplicationHandler for LaunchApp {
-    fn can_create_surfaces(&mut self, _event_loop: &dyn ActiveEventLoop) {}
-
-    fn resumed(&mut self, event_loop: &dyn ActiveEventLoop) {
+    fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
         if self
             .state
             .inner

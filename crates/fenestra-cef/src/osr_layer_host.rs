@@ -7,10 +7,14 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use fenestra_platform::ShellSurfaceKeyboardInteractivity;
+use fenestra_platform::{
+    ShellSurfaceKeyboardInteractivity, WindowBackgroundEffect, WindowOptions, WindowRegion,
+    WindowRegions, request_surface_effect,
+};
 use layershellev::{
-    DispatchMessage, LayerShellEvent, ReturnData, WindowState,
+    DispatchMessage, LayerShellEvent, NewPopUpSettings, ReturnData, WindowState,
     calloop::channel::{self, Sender},
+    id,
     reexport::wl_shm::{self, WlShm},
 };
 use wayland_client::{QueueHandle, protocol::wl_buffer::WlBuffer};
@@ -19,7 +23,7 @@ use crate::{
     osr,
     osr_frame_buffer::buffer_len,
     osr_host::OsrHostConfig,
-    osr_protocol::{OsrFrame, OsrMessage, OsrPaintBatch, OsrSurface, absolute_batch_frame},
+    osr_protocol::{OsrFrame, OsrMessage, OsrPaintBatch, OsrSurface},
 };
 
 mod alpha;
@@ -80,7 +84,7 @@ struct OsrLayerHost {
     scale: f64,
     main_frame: Option<OsrFrame>,
     main_frame_surface_size: Option<(u32, u32)>,
-    popup_frame: Option<OsrFrame>,
+    popup: Option<PopupSurface>,
     main_buffer: Vec<u8>,
     scratch: Vec<u8>,
     surface_mapped: bool,
@@ -97,6 +101,20 @@ struct OsrLayerHost {
     lifecycle_state: LayerLifecycleState,
     alpha_modifier: Option<LayerAlphaModifier>,
     surface_alpha: f32,
+}
+
+struct PopupSurface {
+    id: id::Id,
+    position: (i32, i32),
+    size: (u32, u32),
+    frame: Option<OsrFrame>,
+    pending_frames: Vec<OsrFrame>,
+    buffer_file: Option<File>,
+    wayland_buffer: Option<WlBuffer>,
+    buffer: Vec<u8>,
+    scratch: Vec<u8>,
+    mapped: bool,
+    effect: Option<fenestra_platform::WindowEffect>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -150,7 +168,7 @@ impl OsrLayerHost {
             scale: 1.0,
             main_frame: None,
             main_frame_surface_size: None,
-            popup_frame: None,
+            popup: None,
             main_buffer: Vec::new(),
             scratch: Vec::new(),
             surface_mapped: false,
@@ -180,6 +198,16 @@ impl OsrLayerHost {
             LayerShellEvent::RequestBuffer(file, shm, qh, width, height) => {
                 let width = width.max(1);
                 let height = height.max(1);
+                if self
+                    .popup
+                    .as_ref()
+                    .is_some_and(|popup| Some(popup.id) == id)
+                {
+                    let buffer = self.install_popup_buffer(file, shm, qh, width, height);
+                    self.ensure_popup_effect(state);
+                    self.commit_popup_surface(state, DamageRect::full(width, height));
+                    return ReturnData::WlBuffer(buffer);
+                }
                 self.shm = Some(shm.clone());
                 self.queue_handle = Some(qh.clone());
                 let size_changed = self.surface_size != (width, height);
@@ -208,6 +236,19 @@ impl OsrLayerHost {
                 scale_float,
                 ..
             } => {
+                if self
+                    .popup
+                    .as_ref()
+                    .is_some_and(|popup| Some(popup.id) == id)
+                {
+                    if let Some(popup) = self.popup.as_mut() {
+                        popup.size = ((*width).max(1), (*height).max(1));
+                        popup.mapped = false;
+                    }
+                    self.ensure_popup_effect(state);
+                    self.refresh_popup_surface(state);
+                    return ReturnData::None;
+                }
                 let surface_size = ((*width).max(1), (*height).max(1));
                 let size_changed = self.surface_size != surface_size;
                 self.surface_size = surface_size;
@@ -254,8 +295,8 @@ impl OsrLayerHost {
                 ..
             } if self.visible => {
                 self.pointer_inside = true;
-                self.cursor_x = *surface_x as f32;
-                self.cursor_y = *surface_y as f32;
+                (self.cursor_x, self.cursor_y) =
+                    self.pointer_position_for_unit(id, *surface_x, *surface_y);
                 self.forward_mouse_move(false);
                 return ReturnData::RequestSetCursorShape((
                     cursor_shape_for_wayland(&self.cursor_shape).to_string(),
@@ -268,8 +309,8 @@ impl OsrLayerHost {
                 ..
             } if self.visible => {
                 self.pointer_inside = true;
-                self.cursor_x = *surface_x as f32;
-                self.cursor_y = *surface_y as f32;
+                (self.cursor_x, self.cursor_y) =
+                    self.pointer_position_for_unit(id, *surface_x, *surface_y);
                 self.forward_mouse_move(false);
             }
             DispatchMessage::MouseLeave if self.visible => {
@@ -287,6 +328,14 @@ impl OsrLayerHost {
                 self.forward_mouse_wheel(axis_delta(horizontal), axis_delta(vertical))
             }
             DispatchMessage::Closed => {
+                if self
+                    .popup
+                    .as_ref()
+                    .is_some_and(|popup| Some(popup.id) == id)
+                {
+                    self.popup = None;
+                    return ReturnData::None;
+                }
                 self.begin_close();
                 return ReturnData::RequestExit;
             }
@@ -317,12 +366,16 @@ impl OsrLayerHost {
                         OsrSurface::Main => {
                             let frame_size = (frame.width, frame.height);
                             if self.main_frame_surface_size != Some(frame_size) {
-                                self.popup_frame = None;
+                                self.close_popup(state);
                             }
                             self.main_frame_surface_size = Some(frame_size);
                             self.main_frame = Some(frame);
                         }
-                        OsrSurface::Popup => self.popup_frame = Some(frame),
+                        OsrSurface::Popup => {
+                            if let Some(return_data) = self.update_popup_frame(frame, state, id) {
+                                return return_data;
+                            }
+                        }
                     }
                     if self.main_frame_ready() {
                         self.restore_keyboard(state);
@@ -335,14 +388,13 @@ impl OsrLayerHost {
             }
             LayerHostEvent::Message(OsrMessage::PaintBatch(batch)) => {
                 if self.visible {
-                    self.refresh_batch_surface(batch, state, id);
+                    if let Some(return_data) = self.refresh_batch_surface(batch, state, id) {
+                        return return_data;
+                    }
                 }
             }
             LayerHostEvent::Message(OsrMessage::PopupHidden) => {
-                self.popup_frame = None;
-                if self.visible {
-                    self.refresh_surface(state, id);
-                }
+                self.close_popup(state);
             }
             LayerHostEvent::Message(OsrMessage::Cursor(cursor)) => {
                 self.cursor_shape = cursor;
@@ -368,6 +420,7 @@ impl OsrLayerHost {
             }
             LayerHostEvent::Visible(visible) => self.set_surface_visible(visible, state),
             LayerHostEvent::Alpha(alpha) => self.set_surface_alpha(alpha, state),
+            LayerHostEvent::Margin(margin) => self.set_surface_margin(margin, state),
             LayerHostEvent::Disconnected => {
                 self.socket = None;
                 return ReturnData::RequestExit;
@@ -393,6 +446,7 @@ impl OsrLayerHost {
             width,
             height,
             scale,
+            self.active_frame_rate(),
         );
         let child = match command.spawn() {
             Ok(child) => child,
@@ -432,7 +486,7 @@ impl OsrLayerHost {
             width,
             height,
             self.main_frame.as_ref(),
-            self.popup_frame.as_ref(),
+            None,
             &mut self.main_buffer,
             &mut self.scratch,
         )
@@ -451,6 +505,54 @@ impl OsrLayerHost {
             (),
         );
         self.wayland_buffer = Some(buffer.clone());
+        buffer
+    }
+
+    fn install_popup_buffer(
+        &mut self,
+        file: &mut File,
+        shm: &WlShm,
+        qh: &QueueHandle<WindowState<()>>,
+        width: u32,
+        height: u32,
+    ) -> WlBuffer {
+        let Some(popup) = self.popup.as_mut() else {
+            return create_buffer(file, shm, qh, width, height);
+        };
+        popup.size = (width, height);
+        popup.mapped = false;
+        if let Ok(clone) = file.try_clone() {
+            popup.buffer_file = Some(clone);
+        }
+        let byte_len = buffer_len(width, height);
+        let paint_result = if popup.pending_frames.is_empty() {
+            paint_buffer_file(
+                file,
+                width,
+                height,
+                popup.frame.as_ref(),
+                None,
+                &mut popup.buffer,
+                &mut popup.scratch,
+            )
+        } else {
+            let frames = popup.pending_frames.iter().collect::<Vec<_>>();
+            paint_frames_buffer_file(
+                file,
+                width,
+                height,
+                &frames,
+                &[],
+                &mut popup.buffer,
+                &mut popup.scratch,
+            )
+        };
+        popup.pending_frames.clear();
+        if paint_result.is_err() {
+            let _ = file.set_len(byte_len as u64);
+        }
+        let buffer = create_buffer(file, shm, qh, width, height);
+        popup.wayland_buffer = Some(buffer.clone());
         buffer
     }
 
@@ -490,9 +592,7 @@ impl OsrLayerHost {
 
     fn send_lifecycle(&self, state: LayerLifecycleState, reason: &str) {
         let (name, frame_rate) = match state {
-            LayerLifecycleState::Active => {
-                ("active", self.config.lifecycle.active_frame_rate.max(1))
-            }
+            LayerLifecycleState::Active => ("active", self.active_frame_rate()),
             LayerLifecycleState::Suspended => (
                 "suspended",
                 self.config.lifecycle.background_frame_rate.max(1),
@@ -502,6 +602,14 @@ impl OsrLayerHost {
             "lifecycle\t{name}\t{frame_rate}\t{}\n",
             crate::osr_protocol::encode_component(reason)
         ));
+    }
+
+    fn active_frame_rate(&self) -> u32 {
+        if self.config.lifecycle.active_frame_rate > 0 {
+            self.config.lifecycle.active_frame_rate
+        } else {
+            60
+        }
     }
 
     fn suspend(&mut self, reason: &str) {
@@ -559,7 +667,7 @@ impl OsrLayerHost {
     }
 
     fn hide_shell_surface(&mut self, state: &mut WindowState<()>) {
-        self.popup_frame = None;
+        self.close_popup(state);
         if self.pointer_inside {
             self.forward_mouse_move(true);
             self.pointer_inside = false;
@@ -569,7 +677,9 @@ impl OsrLayerHost {
         self.send_resize();
         self.set_surface_alpha(0.0, state);
         self.hide_surface(state);
-        self.release_hidden_frame_memory();
+        if !self.config.lifecycle.retain_hidden_frame {
+            self.release_hidden_frame_memory();
+        }
     }
 
     fn set_surface_alpha(&mut self, alpha: f32, state: &WindowState<()>) {
@@ -584,6 +694,23 @@ impl OsrLayerHost {
         if let Some(modifier) = &self.alpha_modifier {
             let _ = modifier.set_alpha(alpha);
         }
+    }
+
+    fn set_surface_margin(
+        &mut self,
+        margin: fenestra_platform::ShellSurfaceMargin,
+        state: &WindowState<()>,
+    ) {
+        let Some(shell_surface) = self.config.shell_surface.as_mut() else {
+            return;
+        };
+        if shell_surface.margin == margin {
+            return;
+        }
+        shell_surface.margin = margin;
+        state
+            .main_window()
+            .set_margin((margin.top, margin.right, margin.bottom, margin.left));
     }
 
     fn hide_surface(&mut self, state: &mut WindowState<()>) {
@@ -628,7 +755,7 @@ impl OsrLayerHost {
             self.buffer_size.0,
             self.buffer_size.1,
             self.main_frame.as_ref(),
-            self.popup_frame.as_ref(),
+            None,
             &mut self.main_buffer,
             &mut self.scratch,
         ) {
@@ -649,58 +776,45 @@ impl OsrLayerHost {
         batch: OsrPaintBatch,
         state: &mut WindowState<()>,
         id: Option<layershellev::id::Id>,
-    ) {
+    ) -> Option<ReturnData<()>> {
         if batch.surface == OsrSurface::Main && (batch.width, batch.height) != self.surface_size {
             self.main_frame = None;
             self.main_frame_surface_size = Some((batch.width, batch.height));
-            self.popup_frame = None;
+            self.close_popup(state);
             self.hide_surface(state);
-            return;
+            return None;
         }
-        if batch.surface == OsrSurface::Popup && self.main_frame.is_none() {
-            return;
+        if batch.surface == OsrSurface::Popup {
+            return self.update_popup_batch(batch, state, id);
         }
         let Some(file) = &self.buffer_file else {
-            return;
+            return None;
         };
         let Ok(mut file) = file.try_clone() else {
-            return;
+            return None;
         };
-        let mut absolute_frames = Vec::new();
-        let (main_frames, popup_frames): (Vec<&OsrFrame>, Vec<&OsrFrame>) = match batch.surface {
-            OsrSurface::Main => (batch.frames.iter().collect(), Vec::new()),
-            OsrSurface::Popup => {
-                absolute_frames = batch
-                    .frames
-                    .iter()
-                    .map(|frame| absolute_batch_frame(&batch, frame))
-                    .collect::<Vec<_>>();
-                (Vec::new(), absolute_frames.iter().collect())
-            }
-        };
+        let main_frames = batch.frames.iter().collect::<Vec<_>>();
         let damage = match paint_frames_buffer_file(
             &mut file,
             self.buffer_size.0,
             self.buffer_size.1,
             &main_frames,
-            &popup_frames,
+            &[],
             &mut self.main_buffer,
             &mut self.scratch,
         ) {
             Ok(damage) => damage,
-            Err(_) => return,
+            Err(_) => return None,
         };
         match batch.surface {
             OsrSurface::Main => {
                 self.main_frame = batch.frames.last().cloned();
                 self.main_frame_surface_size = Some((batch.width, batch.height));
             }
-            OsrSurface::Popup => {
-                self.popup_frame = absolute_frames.last().cloned();
-            }
+            OsrSurface::Popup => {}
         }
         if !self.main_frame_ready() {
-            return;
+            return None;
         }
         self.restore_keyboard(state);
         self.force_resume("first-paint");
@@ -708,9 +822,239 @@ impl OsrLayerHost {
             && let Some(unit) = state.get_unit_with_id(id)
         {
             self.commit_surface(unit, damage);
-            return;
+            return None;
         }
         self.commit_surface(state.main_window(), damage);
+        None
+    }
+
+    fn update_popup_frame(
+        &mut self,
+        frame: OsrFrame,
+        state: &mut WindowState<()>,
+        parent_id: Option<id::Id>,
+    ) -> Option<ReturnData<()>> {
+        if self.main_frame.is_none() {
+            return None;
+        }
+        let position = (frame.x, frame.y);
+        let size = (frame.width.max(1), frame.height.max(1));
+        let local_frame = local_popup_frame(frame);
+        if self
+            .popup
+            .as_ref()
+            .is_none_or(|popup| popup.position != position || popup.size != size)
+        {
+            return Some(self.create_popup_surface(position, size, local_frame, state, parent_id));
+        }
+        if let Some(popup) = self.popup.as_mut() {
+            popup.frame = Some(local_frame);
+        }
+        self.refresh_popup_surface(state);
+        None
+    }
+
+    fn update_popup_batch(
+        &mut self,
+        batch: OsrPaintBatch,
+        state: &mut WindowState<()>,
+        parent_id: Option<id::Id>,
+    ) -> Option<ReturnData<()>> {
+        if self.main_frame.is_none() {
+            return None;
+        }
+        let position = (batch.x, batch.y);
+        let size = (batch.width.max(1), batch.height.max(1));
+        if self
+            .popup
+            .as_ref()
+            .is_none_or(|popup| popup.position != position || popup.size != size)
+        {
+            let local_frames = batch
+                .frames
+                .iter()
+                .cloned()
+                .map(local_popup_frame)
+                .collect::<Vec<_>>();
+            let frame = local_frames
+                .last()
+                .cloned()
+                .unwrap_or_else(|| empty_popup_frame(size));
+            let return_data = self.create_popup_surface(position, size, frame, state, parent_id);
+            if let Some(popup) = self.popup.as_mut() {
+                popup.pending_frames = local_frames;
+                popup.frame = popup.pending_frames.last().cloned();
+            }
+            return Some(return_data);
+        }
+        self.paint_popup_batch(&batch, state);
+        None
+    }
+
+    fn create_popup_surface(
+        &mut self,
+        position: (i32, i32),
+        size: (u32, u32),
+        frame: OsrFrame,
+        state: &mut WindowState<()>,
+        parent_id: Option<id::Id>,
+    ) -> ReturnData<()> {
+        self.close_popup(state);
+        let parent_id = parent_id.unwrap_or_else(|| state.main_window().id());
+        let mut popup_id = id::Id::unique();
+        if popup_id == parent_id {
+            popup_id = id::Id::unique();
+        }
+        self.popup = Some(PopupSurface {
+            id: popup_id,
+            position,
+            size,
+            frame: Some(frame),
+            pending_frames: Vec::new(),
+            buffer_file: None,
+            wayland_buffer: None,
+            buffer: Vec::new(),
+            scratch: Vec::new(),
+            mapped: false,
+            effect: None,
+        });
+        ReturnData::NewPopUp((
+            NewPopUpSettings {
+                size,
+                position,
+                id: parent_id,
+            },
+            popup_id,
+            None,
+        ))
+    }
+
+    fn refresh_popup_surface(&mut self, state: &mut WindowState<()>) {
+        let Some(popup) = self.popup.as_mut() else {
+            return;
+        };
+        let Some(file) = &popup.buffer_file else {
+            return;
+        };
+        let Ok(mut file) = file.try_clone() else {
+            return;
+        };
+        let damage = match paint_buffer_file(
+            &mut file,
+            popup.size.0,
+            popup.size.1,
+            popup.frame.as_ref(),
+            None,
+            &mut popup.buffer,
+            &mut popup.scratch,
+        ) {
+            Ok(damage) => damage,
+            Err(_) => return,
+        };
+        self.commit_popup_surface(state, damage);
+    }
+
+    fn paint_popup_batch(&mut self, batch: &OsrPaintBatch, state: &mut WindowState<()>) {
+        let Some(popup) = self.popup.as_mut() else {
+            return;
+        };
+        let Some(file) = &popup.buffer_file else {
+            if let Some(frame) = batch.frames.last().cloned() {
+                popup.frame = Some(frame);
+            }
+            return;
+        };
+        let Ok(mut file) = file.try_clone() else {
+            return;
+        };
+        let local_frames = batch
+            .frames
+            .iter()
+            .cloned()
+            .map(local_popup_frame)
+            .collect::<Vec<_>>();
+        let frames = local_frames.iter().collect::<Vec<_>>();
+        let damage = match paint_frames_buffer_file(
+            &mut file,
+            popup.size.0,
+            popup.size.1,
+            &frames,
+            &[],
+            &mut popup.buffer,
+            &mut popup.scratch,
+        ) {
+            Ok(damage) => damage,
+            Err(_) => return,
+        };
+        popup.frame = local_frames.last().cloned();
+        self.commit_popup_surface(state, damage);
+    }
+
+    fn commit_popup_surface(&mut self, state: &mut WindowState<()>, damage: DamageRect) {
+        self.ensure_popup_effect(state);
+        let Some(popup) = self.popup.as_mut() else {
+            return;
+        };
+        let Some(unit) = state.get_unit_with_id(popup.id) else {
+            return;
+        };
+        let Some(buffer) = popup.wayland_buffer.as_ref() else {
+            unit.refresh();
+            return;
+        };
+        let damage = if popup.mapped {
+            damage
+        } else {
+            DamageRect::full(popup.size.0, popup.size.1)
+        };
+        let surface = unit.get_wlsurface();
+        surface.attach(Some(buffer), 0, 0);
+        surface.damage_buffer(
+            damage.x as i32,
+            damage.y as i32,
+            damage.width as i32,
+            damage.height as i32,
+        );
+        surface.commit();
+        popup.mapped = true;
+    }
+
+    fn ensure_popup_effect(&mut self, state: &WindowState<()>) {
+        let Some(popup) = self.popup.as_mut() else {
+            return;
+        };
+        if popup.effect.is_some() {
+            return;
+        }
+        let Some(unit) = state.get_unit_with_id(popup.id) else {
+            return;
+        };
+        let options = popup_effect_options(popup.size);
+        popup.effect =
+            request_surface_effect(unit, &options, popup.size.0 as i32, popup.size.1 as i32);
+    }
+
+    fn close_popup(&mut self, state: &mut WindowState<()>) {
+        if let Some(popup) = self.popup.take() {
+            state.request_close(popup.id);
+        }
+    }
+
+    fn pointer_position_for_unit(
+        &self,
+        id: Option<id::Id>,
+        surface_x: f64,
+        surface_y: f64,
+    ) -> (f32, f32) {
+        if let Some(popup) = &self.popup
+            && Some(popup.id) == id
+        {
+            return (
+                surface_x as f32 + popup.position.0 as f32,
+                surface_y as f32 + popup.position.1 as f32,
+            );
+        }
+        (surface_x as f32, surface_y as f32)
     }
 
     fn main_frame_ready(&self) -> bool {
@@ -720,7 +1064,7 @@ impl OsrLayerHost {
     fn clear_frames(&mut self) {
         self.main_frame = None;
         self.main_frame_surface_size = None;
-        self.popup_frame = None;
+        self.popup = None;
     }
 
     fn release_hidden_frame_memory(&mut self) {
@@ -750,6 +1094,54 @@ impl OsrLayerHost {
         );
         surface.commit();
         self.surface_mapped = true;
+    }
+}
+
+fn create_buffer(
+    file: &mut File,
+    shm: &WlShm,
+    qh: &QueueHandle<WindowState<()>>,
+    width: u32,
+    height: u32,
+) -> WlBuffer {
+    let byte_len = buffer_len(width, height);
+    let pool = shm.create_pool(file.as_fd(), byte_len as i32, qh, ());
+    pool.create_buffer(
+        0,
+        width as i32,
+        height as i32,
+        (width * 4) as i32,
+        wl_shm::Format::Argb8888,
+        qh,
+        (),
+    )
+}
+
+fn local_popup_frame(mut frame: OsrFrame) -> OsrFrame {
+    frame.x = 0;
+    frame.y = 0;
+    frame
+}
+
+fn empty_popup_frame(size: (u32, u32)) -> OsrFrame {
+    OsrFrame {
+        surface: OsrSurface::Popup,
+        width: size.0,
+        height: size.1,
+        x: 0,
+        y: 0,
+        bytes: vec![0; buffer_len(size.0, size.1)],
+    }
+}
+
+fn popup_effect_options(size: (u32, u32)) -> WindowOptions {
+    WindowOptions {
+        width: size.0,
+        height: size.1,
+        transparent: true,
+        background_effect: WindowBackgroundEffect::Blur,
+        regions: WindowRegions::new().blur(WindowRegion::adaptive_full()),
+        ..WindowOptions::default()
     }
 }
 

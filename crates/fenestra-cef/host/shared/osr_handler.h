@@ -130,6 +130,9 @@ class FenestraOsrHandler : public CefClient,
                            CefRefPtr<CefFrame> frame,
                            const std::string& url);
   bool HandleWindowCommand(CefRefPtr<CefBrowser> browser, const std::string& url);
+  bool IsNativePopupBrowser(CefRefPtr<CefBrowser> browser) const;
+  bool OpenNativePopup(const std::string& html, int x, int y, int width, int height);
+  void CloseNativePopup();
   void RequestNativeClose();
 	  void InstallBridge(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame);
 	  void InstallTransparentBackground(CefRefPtr<CefFrame> frame);
@@ -146,6 +149,11 @@ class FenestraOsrHandler : public CefClient,
   int height_ = 1;
   float scale_ = 1.0f;
   CefRect popup_rect_;
+  CefRect native_popup_rect_;
+  CefRefPtr<CefBrowser> native_popup_browser_;
+  std::string native_popup_url_;
+  bool native_popup_pending_ = false;
+  bool native_popup_visible_ = false;
 	  std::set<std::string> bridge_commands_;
 	  bool transparent_background_ = false;
 	  bool suspended_ = false;

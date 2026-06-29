@@ -11,7 +11,7 @@ use std::{
 use layershellev::calloop::channel::Sender;
 
 use crate::{
-    HOST_CONTROL_PREFIX,
+    HOST_CONTROL_PREFIX, ShellSurfaceMargin,
     osr_protocol::{OsrMessage, read_message},
 };
 
@@ -20,6 +20,7 @@ pub(super) enum LayerHostEvent {
     Message(OsrMessage),
     Visible(bool),
     Alpha(f32),
+    Margin(ShellSurfaceMargin),
     Disconnected,
 }
 
@@ -49,6 +50,12 @@ pub(super) fn spawn_layer_bridge_proxy(child: &mut Child, sender: Sender<LayerHo
                 }
                 if let Some(alpha) = parse_alpha_control(&line) {
                     if sender.send(LayerHostEvent::Alpha(alpha)).is_err() {
+                        break;
+                    }
+                    continue;
+                }
+                if let Some(margin) = parse_margin_control(&line) {
+                    if sender.send(LayerHostEvent::Margin(margin)).is_err() {
                         break;
                     }
                     continue;
@@ -145,4 +152,25 @@ fn parse_alpha_control(line: &str) -> Option<f32> {
         return None;
     }
     value.parse::<f32>().ok().map(|alpha| alpha.clamp(0.0, 1.0))
+}
+
+fn parse_margin_control(line: &str) -> Option<ShellSurfaceMargin> {
+    let (command, value) = crate::parse_host_control(line)?;
+    if command != "margin" {
+        return None;
+    }
+    let mut parts = value.split(',').map(str::trim);
+    let top = parts.next()?.parse::<i32>().ok()?;
+    let right = parts.next()?.parse::<i32>().ok()?;
+    let bottom = parts.next()?.parse::<i32>().ok()?;
+    let left = parts.next()?.parse::<i32>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(ShellSurfaceMargin {
+        top,
+        right,
+        bottom,
+        left,
+    })
 }

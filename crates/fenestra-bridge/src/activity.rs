@@ -10,8 +10,16 @@ use crate::bridge::{BridgeCommand, BridgeError, BridgeResponse, BridgeResult};
 pub const BEGIN_COMMAND: &str = "fenestra.activity.begin";
 pub const END_COMMAND: &str = "fenestra.activity.end";
 pub const LIST_COMMAND: &str = "fenestra.activity.list";
+pub const POPUP_OPEN_COMMAND: &str = "fenestra.popup.open";
+pub const POPUP_CLOSE_COMMAND: &str = "fenestra.popup.close";
 
-const INTERNAL_COMMANDS: [&str; 3] = [BEGIN_COMMAND, END_COMMAND, LIST_COMMAND];
+const INTERNAL_COMMANDS: [&str; 5] = [
+    BEGIN_COMMAND,
+    END_COMMAND,
+    LIST_COMMAND,
+    POPUP_OPEN_COMMAND,
+    POPUP_CLOSE_COMMAND,
+];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActivityOptions {
