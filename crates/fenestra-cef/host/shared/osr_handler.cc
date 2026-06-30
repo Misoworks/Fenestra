@@ -1264,6 +1264,7 @@ void FenestraOsrHandler::HandleControlLine(const std::string& line) {
     scale_ = std::max(0.25f, static_cast<float>(std::atof(parts[3].c_str())));
     host->NotifyScreenInfoChanged();
     host->WasResized();
+    host->Invalidate(PET_VIEW);
   } else if (parts[0] == "mouse_move" && parts.size() >= 5) {
     CefMouseEvent event;
     event.x = pointer_x;
@@ -1376,6 +1377,7 @@ void FenestraOsrHandler::ApplyLifecycle(const std::string& state,
     host->WasHidden(false);
     host->SetWindowlessFrameRate(std::max(1, frame_rate));
     host->WasResized();
+    host->Invalidate(PET_VIEW);
     DispatchLifecycle("active", reason);
     return;
   }

@@ -49,6 +49,8 @@ const CONTROL_SIZE: f32 = 24.0;
 const CONTROL_GAP: f32 = 8.0;
 const RESIZE_EDGE: f32 = 7.0;
 const CLOSE_GRACE: Duration = Duration::from_millis(300);
+const RESIZE_REPAINT_RETRY: Duration = Duration::from_millis(16);
+const RESIZE_REPAINT_GRACE: Duration = Duration::from_millis(900);
 const FALLBACK_ACTIVE_FRAME_RATE: u32 = 60;
 
 const EVENTFLAG_SHIFT_DOWN: u32 = 1 << 1;
@@ -231,6 +233,7 @@ struct OsrNativeHost {
     hibernate_deadline: Option<Instant>,
     hibernate_commit_deadline: Option<Instant>,
     closing_deadline: Option<Instant>,
+    pending_resize_paint: Option<PendingResizePaint>,
     activity_hibernation_blockers: BTreeSet<String>,
     presented: bool,
     pending_activation_token: Option<ActivationToken>,
@@ -310,6 +313,13 @@ struct ClickMemory {
     count: i32,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct PendingResizePaint {
+    size: (u32, u32),
+    retry_at: Instant,
+    deadline: Instant,
+}
+
 impl OsrNativeHost {
     fn new(
         config: OsrHostConfig,
@@ -364,6 +374,7 @@ impl OsrNativeHost {
             hibernate_deadline,
             hibernate_commit_deadline: None,
             closing_deadline: None,
+            pending_resize_paint: None,
             activity_hibernation_blockers: BTreeSet::new(),
             presented: false,
             pending_activation_token: None,
@@ -471,6 +482,50 @@ impl OsrNativeHost {
     fn send_resize(&self) {
         let (width, height, scale) = self.content_size_for_cef();
         self.send_control(&format!("resize\t{width}\t{height}\t{scale:.4}\n"));
+    }
+
+    fn queue_resize_paint(&mut self) {
+        let size = self.content_surface_size();
+        if self.main_frame_matches(size) {
+            self.pending_resize_paint = None;
+            self.send_resize();
+            return;
+        }
+        let now = Instant::now();
+        self.pending_resize_paint = Some(PendingResizePaint {
+            size,
+            retry_at: now + RESIZE_REPAINT_RETRY,
+            deadline: now + RESIZE_REPAINT_GRACE,
+        });
+        self.send_resize();
+    }
+
+    fn retry_resize_paint(&mut self) {
+        let Some(mut pending) = self.pending_resize_paint else {
+            return;
+        };
+        if self.main_frame_matches(pending.size) {
+            self.pending_resize_paint = None;
+            return;
+        }
+        self.send_resize();
+        pending.retry_at = Instant::now() + RESIZE_REPAINT_RETRY;
+        self.pending_resize_paint = Some(pending);
+    }
+
+    fn clear_pending_resize_paint(&mut self) {
+        let Some(pending) = self.pending_resize_paint else {
+            return;
+        };
+        if self.main_frame_matches(pending.size) {
+            self.pending_resize_paint = None;
+        }
+    }
+
+    fn main_frame_matches(&self, size: (u32, u32)) -> bool {
+        self.main_frame
+            .as_ref()
+            .is_some_and(|frame| (frame.width, frame.height) == size)
     }
 
     fn send_control(&self, line: &str) {
@@ -758,6 +813,11 @@ impl OsrNativeHost {
         self.config.visible && self.lifecycle_state == LifecycleState::Active
     }
 
+    fn content_surface_size(&self) -> (u32, u32) {
+        let (width, height, _) = self.content_size_for_cef();
+        (width, height)
+    }
+
     fn hide_window(&mut self, reason: &str) {
         self.config.visible = false;
         self.focused = false;
@@ -832,6 +892,8 @@ impl OsrNativeHost {
                     y: 0,
                     bytes: Vec::new(),
                 });
+                self.clear_pending_resize_paint();
+                self.update_effect_regions();
             }
             OsrSurface::Popup => {
                 let Some(damage) = self.popup_buffer.compose(
@@ -870,14 +932,19 @@ impl OsrNativeHost {
     }
 
     fn update_paint_batch(&mut self, batch: OsrPaintBatch) -> bool {
-        let Some(renderer) = self.renderer.as_mut() else {
-            return false;
-        };
+        let content_size = self.content_surface_size();
         if batch.frames.is_empty() {
             return false;
         }
         match batch.surface {
             OsrSurface::Main => {
+                if (batch.width, batch.height) != content_size {
+                    self.retry_resize_paint();
+                    return false;
+                }
+                let Some(renderer) = self.renderer.as_mut() else {
+                    return false;
+                };
                 let Some(damage) =
                     self.main_buffer
                         .compose_batch(batch.width, batch.height, &batch.frames)
@@ -907,8 +974,13 @@ impl OsrNativeHost {
                     y: 0,
                     bytes: Vec::new(),
                 });
+                self.clear_pending_resize_paint();
+                self.update_effect_regions();
             }
             OsrSurface::Popup => {
+                let Some(renderer) = self.renderer.as_mut() else {
+                    return false;
+                };
                 let Some(damage) =
                     self.popup_buffer
                         .compose_batch(batch.width, batch.height, &batch.frames)
@@ -1015,13 +1087,13 @@ impl OsrNativeHost {
         }
         self.draw_titlebar(&mut list, width);
         let y = self.titlebar_height();
-        if self.main_frame.is_some() {
+        if let Some(frame) = &self.main_frame {
             list.push(ImageCommand {
                 id: MAIN_TEXTURE_ID.to_string(),
                 x: 0.0,
                 y,
-                width,
-                height: (height - y).max(1.0),
+                width: frame.width as f32,
+                height: frame.height as f32,
                 opacity: 1.0,
             });
         }
@@ -1253,6 +1325,7 @@ impl OsrNativeHost {
         self.drop_presented_window();
         self.main_frame = None;
         self.popup_frame = None;
+        self.pending_resize_paint = None;
         self.main_buffer.release();
         self.popup_buffer.release();
     }
@@ -1278,30 +1351,38 @@ impl OsrNativeHost {
     }
 
     fn upload_cached_textures(&mut self) {
+        let main_frame = self
+            .main_frame
+            .as_ref()
+            .map(|frame| (frame.width, frame.height));
+        let popup_frame = self
+            .popup_frame
+            .as_ref()
+            .map(|frame| (frame.width, frame.height));
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
-        if let Some(frame) = &self.main_frame {
+        if let Some((width, height)) = main_frame {
             let _ = renderer.update_dynamic_bgra_image_region(
                 MAIN_TEXTURE_ID,
-                frame.width,
-                frame.height,
+                width,
+                height,
                 0,
                 0,
-                frame.width,
-                frame.height,
+                width,
+                height,
                 self.main_buffer.bytes(),
             );
         }
-        if let Some(frame) = &self.popup_frame {
+        if let Some((width, height)) = popup_frame {
             let _ = renderer.update_dynamic_bgra_image_region(
                 POPUP_TEXTURE_ID,
-                frame.width,
-                frame.height,
+                width,
+                height,
                 0,
                 0,
-                frame.width,
-                frame.height,
+                width,
+                height,
                 self.popup_buffer.bytes(),
             );
         }
@@ -1343,7 +1424,7 @@ impl ApplicationHandler for OsrNativeHost {
                     renderer.resize(size.width, size.height, window.scale_factor() as f32);
                 }
                 self.update_effect_regions();
-                self.send_resize();
+                self.queue_resize_paint();
                 window.request_redraw();
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
@@ -1353,7 +1434,7 @@ impl ApplicationHandler for OsrNativeHost {
                     renderer.resize(size.width, size.height, scale_factor as f32);
                 }
                 self.update_effect_regions();
-                self.send_resize();
+                self.queue_resize_paint();
                 window.request_redraw();
             }
             WindowEvent::Focused(focused) => {
@@ -1524,6 +1605,9 @@ impl ApplicationHandler for OsrNativeHost {
             event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
             return;
         }
+        if self.drive_resize_paint(event_loop) {
+            return;
+        }
         if let Some(deadline) = self.hibernate_deadline {
             if self.has_hibernation_blockers() {
                 self.hibernate_deadline = None;
@@ -1546,6 +1630,38 @@ impl ApplicationHandler for OsrNativeHost {
 }
 
 impl OsrNativeHost {
+    fn drive_resize_paint(&mut self, event_loop: &dyn ActiveEventLoop) -> bool {
+        let Some(pending) = self.pending_resize_paint else {
+            return false;
+        };
+        if !self.config.visible
+            || self.lifecycle_state != LifecycleState::Active
+            || self.window.is_none()
+        {
+            self.pending_resize_paint = None;
+            return false;
+        }
+        if self.main_frame_matches(pending.size) {
+            self.pending_resize_paint = None;
+            return false;
+        }
+        let now = Instant::now();
+        if now >= pending.deadline {
+            self.pending_resize_paint = None;
+            return false;
+        }
+        if now >= pending.retry_at {
+            self.retry_resize_paint();
+        }
+        if let Some(pending) = self.pending_resize_paint {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(
+                pending.retry_at.min(pending.deadline),
+            ));
+            return true;
+        }
+        false
+    }
+
     fn begin_activity(&mut self, activity: HostActivity) {
         if !activity.prevents_hibernation {
             return;
@@ -1590,12 +1706,9 @@ impl OsrNativeHost {
         let Some(effect) = &self.effect else {
             return;
         };
-        let scale = self
-            .window
-            .as_ref()
-            .map_or(1.0, |window| window.scale_factor());
-        let width = (f64::from(self.surface_size.width) / scale.max(1.0)).round() as i32;
-        let height = (f64::from(self.surface_size.height) / scale.max(1.0)).round() as i32;
+        let (width, height) = self.content_surface_size();
+        let width = width as i32;
+        let height = height as i32;
         let _ = effect.update(&self.window_options(), width.max(1), height.max(1));
     }
 
