@@ -522,10 +522,27 @@ impl OsrNativeHost {
         }
     }
 
-    fn main_frame_matches(&self, size: (u32, u32)) -> bool {
+    fn should_accept_main_frame_size(&self, size: (u32, u32), target: (u32, u32)) -> bool {
+        if size == target {
+            return true;
+        }
+        if self.pending_resize_paint.is_none() {
+            return false;
+        }
+        let current_distance = self
+            .main_frame_size()
+            .map_or(u64::MAX, |current| size_distance(current, target));
+        size_distance(size, target) < current_distance
+    }
+
+    fn main_frame_size(&self) -> Option<(u32, u32)> {
         self.main_frame
             .as_ref()
-            .is_some_and(|frame| (frame.width, frame.height) == size)
+            .map(|frame| (frame.width, frame.height))
+    }
+
+    fn main_frame_matches(&self, size: (u32, u32)) -> bool {
+        self.main_frame_size().is_some_and(|frame| frame == size)
     }
 
     fn send_control(&self, line: &str) {
@@ -696,9 +713,9 @@ impl OsrNativeHost {
                     if self.accepts_paint() {
                         let was_presented = self.presented;
                         let was_resize_pending = self.pending_resize_paint.is_some();
-                        needs_redraw |= self.update_frame_texture(frame);
-                        resize_frame_ready |= was_resize_pending
-                            && self.main_frame_matches(self.content_surface_size());
+                        let updated = self.update_frame_texture(frame);
+                        needs_redraw |= updated;
+                        resize_frame_ready |= was_resize_pending && updated;
                         needs_initial_present |= !was_presented && self.main_frame.is_some();
                     }
                 }
@@ -706,9 +723,9 @@ impl OsrNativeHost {
                     if self.accepts_paint() {
                         let was_presented = self.presented;
                         let was_resize_pending = self.pending_resize_paint.is_some();
-                        needs_redraw |= self.update_paint_batch(batch);
-                        resize_frame_ready |= was_resize_pending
-                            && self.main_frame_matches(self.content_surface_size());
+                        let updated = self.update_paint_batch(batch);
+                        needs_redraw |= updated;
+                        resize_frame_ready |= was_resize_pending && updated;
                         needs_initial_present |= !was_presented && self.main_frame.is_some();
                     }
                 }
@@ -944,12 +961,13 @@ impl OsrNativeHost {
 
     fn update_paint_batch(&mut self, batch: OsrPaintBatch) -> bool {
         let content_size = self.content_surface_size();
+        let batch_size = (batch.width, batch.height);
         if batch.frames.is_empty() {
             return false;
         }
         match batch.surface {
             OsrSurface::Main => {
-                if (batch.width, batch.height) != content_size {
+                if !self.should_accept_main_frame_size(batch_size, content_size) {
                     self.retry_resize_paint();
                     return false;
                 }
@@ -985,7 +1003,9 @@ impl OsrNativeHost {
                     y: 0,
                     bytes: Vec::new(),
                 });
-                self.clear_pending_resize_paint();
+                if batch_size == content_size {
+                    self.clear_pending_resize_paint();
+                }
                 self.update_effect_regions();
             }
             OsrSurface::Popup => {
@@ -1995,6 +2015,10 @@ fn popup_local_frame(frame: &OsrFrame) -> OsrFrame {
 
 fn uses_fenestra_chrome(chrome: FenestraWindowChrome) -> bool {
     matches!(chrome, FenestraWindowChrome::Fenestra)
+}
+
+fn size_distance(size: (u32, u32), target: (u32, u32)) -> u64 {
+    u64::from(size.0.abs_diff(target.0)) + u64::from(size.1.abs_diff(target.1))
 }
 
 fn trace_host(config: &OsrHostConfig, stage: impl AsRef<str>) {
