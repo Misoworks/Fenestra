@@ -49,7 +49,7 @@ const CONTROL_SIZE: f32 = 24.0;
 const CONTROL_GAP: f32 = 8.0;
 const RESIZE_EDGE: f32 = 7.0;
 const CLOSE_GRACE: Duration = Duration::from_millis(300);
-const RESIZE_REPAINT_RETRY: Duration = Duration::from_millis(16);
+const RESIZE_REPAINT_RETRY: Duration = Duration::from_millis(8);
 const RESIZE_REPAINT_GRACE: Duration = Duration::from_millis(900);
 const FALLBACK_ACTIVE_FRAME_RATE: u32 = 60;
 
@@ -684,6 +684,7 @@ impl OsrNativeHost {
     fn process_osr_events(&mut self, event_loop: &dyn ActiveEventLoop) {
         let mut needs_redraw = false;
         let mut needs_initial_present = false;
+        let mut resize_frame_ready = false;
         while let Ok(event) = self.receiver.try_recv() {
             match event {
                 OsrHostEvent::Connected(stream) => {
@@ -694,14 +695,20 @@ impl OsrNativeHost {
                 OsrHostEvent::Message(OsrMessage::Frame(frame)) => {
                     if self.accepts_paint() {
                         let was_presented = self.presented;
+                        let was_resize_pending = self.pending_resize_paint.is_some();
                         needs_redraw |= self.update_frame_texture(frame);
+                        resize_frame_ready |= was_resize_pending
+                            && self.main_frame_matches(self.content_surface_size());
                         needs_initial_present |= !was_presented && self.main_frame.is_some();
                     }
                 }
                 OsrHostEvent::Message(OsrMessage::PaintBatch(batch)) => {
                     if self.accepts_paint() {
                         let was_presented = self.presented;
+                        let was_resize_pending = self.pending_resize_paint.is_some();
                         needs_redraw |= self.update_paint_batch(batch);
+                        resize_frame_ready |= was_resize_pending
+                            && self.main_frame_matches(self.content_surface_size());
                         needs_initial_present |= !was_presented && self.main_frame.is_some();
                     }
                 }
@@ -790,7 +797,11 @@ impl OsrNativeHost {
             && needs_redraw
             && let Some(window) = &self.window
         {
-            window.request_redraw();
+            if resize_frame_ready && self.presented {
+                self.render();
+            } else {
+                window.request_redraw();
+            }
         }
     }
 
