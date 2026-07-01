@@ -184,21 +184,11 @@ impl BridgeRuntime {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct WebViewSecurity {
     pub remote_content: bool,
     pub allowed_origins: Vec<String>,
     pub allowed_bridge_permissions: Vec<String>,
-}
-
-impl Default for WebViewSecurity {
-    fn default() -> Self {
-        Self {
-            remote_content: false,
-            allowed_origins: Vec::new(),
-            allowed_bridge_permissions: Vec::new(),
-        }
-    }
 }
 
 impl WebViewSecurity {

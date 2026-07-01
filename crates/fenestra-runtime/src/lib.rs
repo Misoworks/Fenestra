@@ -591,7 +591,7 @@ pub fn prune_user_runtimes(
         .filter(|path| path.is_dir() && is_runtime_dir(path))
         .filter(|path| detect_package(path) == config.package)
         .collect::<Vec<_>>();
-    runtimes.sort_by(|left, right| runtime_sort_key(right).cmp(&runtime_sort_key(left)));
+    runtimes.sort_by_key(|path| std::cmp::Reverse(runtime_sort_key(path)));
 
     let mut removed = 0;
     for path in runtimes.into_iter().skip(keep_latest.max(1)) {

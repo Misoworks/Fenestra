@@ -230,5 +230,5 @@ fn debian_name(value: &str) -> String {
 }
 
 fn rpm_name(value: &str) -> String {
-    value.replace('.', "-").replace('_', "-")
+    value.replace(['.', '_'], "-")
 }

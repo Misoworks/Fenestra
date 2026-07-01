@@ -70,7 +70,7 @@ fn stage_web(source: &Path, app_dir: &Path) -> Result<Option<PathBuf>, String> {
     if let Some(command) = &config.build {
         println!("Building web assets: {command}");
         let status = shell_command(command)
-            .current_dir(&config.root.clone().unwrap_or_else(|| source.to_path_buf()))
+            .current_dir(config.root.clone().unwrap_or_else(|| source.to_path_buf()))
             .stdin(Stdio::null())
             .status()
             .map_err(|error| format!("failed to run web build command `{command}`: {error}"))?;

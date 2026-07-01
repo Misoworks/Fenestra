@@ -142,6 +142,7 @@ pub struct WebView2LifecyclePolicy {
     pub suspend_on_blur: bool,
     pub hibernate_after: Option<Duration>,
     pub hibernate_grace: Duration,
+    pub retain_hidden_frame: bool,
 }
 
 impl WebView2LifecyclePolicy {
@@ -154,6 +155,7 @@ impl WebView2LifecyclePolicy {
             suspend_on_blur: true,
             hibernate_after: Some(Duration::from_secs(300)),
             hibernate_grace: Duration::from_millis(750),
+            retain_hidden_frame: false,
         }
     }
 
@@ -166,6 +168,15 @@ impl WebView2LifecyclePolicy {
             suspend_on_blur: true,
             hibernate_grace: Duration::from_millis(150),
             hibernate_after: None,
+            retain_hidden_frame: true,
+        }
+    }
+
+    pub fn memory_saver_hidden_window() -> Self {
+        Self {
+            hibernate_after: Some(Duration::from_secs(5)),
+            retain_hidden_frame: false,
+            ..Self::hidden_window()
         }
     }
 }

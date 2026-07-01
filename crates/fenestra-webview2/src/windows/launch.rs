@@ -107,19 +107,22 @@ pub(crate) fn launch(
         activity: activity.clone(),
     });
 
-    let inner = Arc::new(WebView2ProcessInner {
-        hwnd: std::sync::atomic::AtomicIsize::new(0),
-        controller: Mutex::new(None),
-        webview: Mutex::new(None),
-        bridge_runtime: Mutex::new(Some(bridge_runtime)),
-        activity: activity.clone(),
-        emitter: emitter.clone(),
-        metrics: metrics.clone(),
-        event_sender: event_tx.clone(),
-        runtime: runtime.clone(),
-        background_frame_rate: window.config.lifecycle.background_frame_rate,
-        command_allowlist: command_allowlist.clone(),
-    });
+    let inner = {
+        #[allow(clippy::arc_with_non_send_sync)]
+        Arc::new(WebView2ProcessInner {
+            hwnd: std::sync::atomic::AtomicIsize::new(0),
+            controller: Mutex::new(None),
+            webview: Mutex::new(None),
+            bridge_runtime: Mutex::new(Some(bridge_runtime)),
+            activity: activity.clone(),
+            emitter: emitter.clone(),
+            metrics: metrics.clone(),
+            event_sender: event_tx.clone(),
+            runtime: runtime.clone(),
+            background_frame_rate: window.config.lifecycle.background_frame_rate,
+            command_allowlist: command_allowlist.clone(),
+        })
+    };
 
     let state = LaunchState {
         config: window.config,
@@ -187,7 +190,7 @@ impl ApplicationHandler for LaunchApp {
         };
         let hwnd = match window.window_handle() {
             Ok(handle) => match handle.as_raw() {
-                RawWindowHandle::Win32(handle) => handle.hwnd.get() as isize,
+                RawWindowHandle::Win32(handle) => handle.hwnd.get(),
                 _ => {
                     eprintln!("fenestra: winit did not return a Win32 handle");
                     event_loop.exit();
