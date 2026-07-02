@@ -124,7 +124,12 @@ pub(crate) fn cef_osr_command(
     active_frame_rate: u32,
 ) -> Command {
     let release_dir = runtime_dir.join("Release");
-    let cache_dir = webview_cache_dir(&config.title, &config.url);
+    let profile_key = config
+        .app_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(&config.title);
+    let cache_dir = webview_cache_dir(profile_key);
     let _ = std::fs::create_dir_all(&cache_dir);
     let mut command = Command::new(host_binary);
     command

@@ -3,7 +3,6 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::Command,
-    sync::atomic::{AtomicU64, Ordering},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -18,7 +17,6 @@ const HOST_HANDLER_H: &str = include_str!("../host/shared/handler.h");
 const HOST_HANDLER_CC: &str = include_str!("../host/shared/handler.cc");
 const HOST_OSR_HANDLER_H: &str = include_str!("../host/shared/osr_handler.h");
 const HOST_OSR_HANDLER_CC: &str = include_str!("../host/shared/osr_handler.cc");
-static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(1);
 const HOST_BUILD_LOCK_TIMEOUT: Duration = Duration::from_secs(600);
 const HOST_BUILD_LOCK_STALE_AFTER: Duration = Duration::from_secs(30 * 60);
 
@@ -114,13 +112,12 @@ fn pick_cmake_generator() -> &'static str {
     }
 }
 
-pub fn webview_cache_dir(title: &str, url: &str) -> PathBuf {
+pub fn webview_cache_dir(profile_key: &str) -> PathBuf {
     user_cache_home()
         .join("fenestra")
         .join("webviews")
-        .join(format!("{:016x}", stable_hash(&[title, url])))
-        .join("instances")
-        .join(instance_key())
+        .join(format!("{:016x}", stable_hash(&[profile_key])))
+        .join("profile")
 }
 
 pub fn ld_library_path(release_dir: &Path) -> String {
@@ -275,15 +272,6 @@ fn user_cache_home() -> PathBuf {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
         .unwrap_or_else(std::env::temp_dir)
-}
-
-fn instance_key() -> String {
-    let counter = INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    format!("{}-{counter}-{timestamp}", std::process::id())
 }
 
 fn unix_timestamp_secs() -> u64 {

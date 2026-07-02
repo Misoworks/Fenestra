@@ -1525,7 +1525,7 @@ fn cef_window_command(
     url: &str,
 ) -> FenestraResult<Command> {
     let release_dir = runtime_dir.join("Release");
-    let cache_dir = host::webview_cache_dir(&config.title, url);
+    let cache_dir = host::webview_cache_dir(&metrics_label(config));
     std::fs::create_dir_all(&cache_dir).map_err(|error| FenestraError::CreationFailed {
         message: format!("failed to create CEF cache dir: {error}"),
     })?;
