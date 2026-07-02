@@ -95,6 +95,13 @@ FenestraWindow::new()
     .dev_command("bun run dev -- --host localhost --port 5173 --strictPort");
 ```
 
+On CEF/Linux, `dev_url(...)` also enables Chrome remote debugging on port 9222 automatically.
+Attach DevTools from Chrome at `chrome://inspect` or open `http://127.0.0.1:9222`.
+Use `.debug(9222)` to force a port, or `.without_debug()` to disable DevTools in dev mode.
+
+Linux CEF builds enable VA-API hardware video decode by default for WebCodecs/MSE.
+Use `.vaapi_hardware_decode(false)` to opt out.
+
 Use source installs for local desktop entries during development:
 
 ```sh

@@ -103,9 +103,23 @@ pub(crate) struct OsrHostConfig {
     pub drag_exclusion_regions: Vec<WindowRegionRect>,
     pub control_regions: Vec<FenestraWindowControlRegion>,
     pub lifecycle: FenestraLifecyclePolicy,
+    pub dev_mode: bool,
+    pub remote_devtools_port: Option<u16>,
+    pub remote_devtools_disabled: bool,
+    #[cfg(target_os = "linux")]
+    pub vaapi_hardware_decode: bool,
 }
 
 impl OsrHostConfig {
+    pub(crate) fn cef_launch_options(&self) -> crate::CefLaunchOptions {
+        crate::CefLaunchOptions {
+            remote_devtools_port: self.remote_devtools_port,
+            remote_devtools_disabled: self.remote_devtools_disabled,
+            #[cfg(target_os = "linux")]
+            vaapi_hardware_decode: self.vaapi_hardware_decode,
+        }
+    }
+
     fn read(config_path: PathBuf) -> Result<Self, String> {
         let text = std::fs::read_to_string(&config_path).map_err(|error| error.to_string())?;
         let value: serde_json::Value =
@@ -198,6 +212,23 @@ impl OsrHostConfig {
             drag_exclusion_regions: rects_from_json(value.get("drag_exclusion_regions")),
             control_regions: control_regions_from_json(value.get("control_regions")),
             lifecycle: lifecycle_from_json(value.get("lifecycle")),
+            dev_mode: value
+                .get("dev_mode")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            remote_devtools_port: value
+                .get("remote_devtools_port")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|port| u16::try_from(port).ok()),
+            remote_devtools_disabled: value
+                .get("remote_devtools_disabled")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            #[cfg(target_os = "linux")]
+            vaapi_hardware_decode: value
+                .get("vaapi_hardware_decode")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true),
         })
     }
 }

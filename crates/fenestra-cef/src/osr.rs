@@ -67,6 +67,10 @@ pub(crate) fn launch_process(
         "drag_exclusion_regions": crate::osr_protocol::rects_to_json(&config.drag_exclusion_regions),
         "control_regions": crate::osr_protocol::control_regions_to_json(&config.control_regions),
         "lifecycle": crate::osr_protocol::lifecycle_to_json(&config.lifecycle),
+        "dev_mode": config.dev_mode(),
+        "remote_devtools_port": config.effective_remote_devtools_port(),
+        "remote_devtools_disabled": config.cef.remote_devtools_disabled,
+        "vaapi_hardware_decode": config.cef.vaapi_hardware_decode,
     });
     std::fs::write(&host_config_path, body.to_string()).map_err(|error| {
         FenestraError::CreationFailed {
@@ -157,7 +161,7 @@ pub(crate) fn cef_osr_command(
             "--cache-path={}",
             cache_dir.join("browser").display()
         ));
-    crate::apply_common_cef_args(&mut command);
+    crate::apply_cef_launch_args(&mut command, &config.cef_launch_options(), config.dev_mode);
     command
         .current_dir(&release_dir)
         .env("GDK_BACKEND", "wayland")

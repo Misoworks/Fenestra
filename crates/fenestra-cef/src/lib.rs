@@ -91,12 +91,63 @@ pub(crate) const DISABLED_CEF_FEATURES: &str = concat!(
     "InterestFeedContentSuggestions"
 );
 
-pub(crate) fn apply_common_cef_args(command: &mut Command) {
+const DEFAULT_REMOTE_DEVTOOLS_PORT: u16 = 9222;
+
+/// Linux CEF launch options for media-heavy apps (WebCodecs, MSE, hardware decode).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CefLaunchOptions {
+    pub remote_devtools_port: Option<u16>,
+    pub remote_devtools_disabled: bool,
+    #[cfg(target_os = "linux")]
+    pub vaapi_hardware_decode: bool,
+}
+
+impl Default for CefLaunchOptions {
+    fn default() -> Self {
+        Self {
+            remote_devtools_port: None,
+            remote_devtools_disabled: false,
+            #[cfg(target_os = "linux")]
+            vaapi_hardware_decode: true,
+        }
+    }
+}
+
+impl CefLaunchOptions {
+    pub fn effective_remote_devtools_port(&self, dev_mode: bool) -> Option<u16> {
+        if self.remote_devtools_disabled {
+            return None;
+        }
+        if let Some(port) = self.remote_devtools_port {
+            return Some(port);
+        }
+        if dev_mode {
+            return Some(DEFAULT_REMOTE_DEVTOOLS_PORT);
+        }
+        None
+    }
+}
+
+pub(crate) fn apply_cef_launch_args(
+    command: &mut Command,
+    options: &CefLaunchOptions,
+    dev_mode: bool,
+) {
+    let mut enabled_features = Vec::new();
     #[cfg(target_os = "linux")]
     {
-        command
-            .arg("--ozone-platform=wayland")
-            .arg("--enable-features=UseOzonePlatform");
+        command.arg("--ozone-platform=wayland");
+        enabled_features.push("UseOzonePlatform");
+        if options.vaapi_hardware_decode {
+            enabled_features.extend([
+                "VaapiVideoDecoder",
+                "VaapiIgnoreDriverChecks",
+                "VaapiOnNvidiaGPUs",
+            ]);
+        }
+    }
+    if !enabled_features.is_empty() {
+        command.arg(format!("--enable-features={}", enabled_features.join(",")));
     }
     command
         .arg(format!("--disable-features={DISABLED_CEF_FEATURES}"))
@@ -115,6 +166,10 @@ pub(crate) fn apply_common_cef_args(command: &mut Command) {
         .arg("--no-default-browser-check")
         .arg("--no-first-run")
         .arg("--password-store=basic");
+    if let Some(port) = options.effective_remote_devtools_port(dev_mode) {
+        command.arg(format!("--remote-debugging-port={port}"));
+        command.arg("--remote-allow-origins=*");
+    }
 }
 
 #[derive(Debug, Error)]
@@ -166,6 +221,7 @@ pub struct FenestraWindowConfig {
     pub runtime: RuntimeConfig,
     pub bridge: BridgeRegistry,
     pub security: WebViewSecurity,
+    pub cef: CefLaunchOptions,
 }
 
 impl Default for FenestraWindowConfig {
@@ -202,6 +258,7 @@ impl Default for FenestraWindowConfig {
             runtime: RuntimeConfig::default(),
             bridge: BridgeRegistry::default(),
             security: WebViewSecurity::default(),
+            cef: CefLaunchOptions::default(),
         }
     }
 }
@@ -214,6 +271,14 @@ impl FenestraWindowConfig {
             return effect;
         }
         self.background_effect
+    }
+
+    pub fn dev_mode(&self) -> bool {
+        self.dev_url.is_some()
+    }
+
+    pub fn effective_remote_devtools_port(&self) -> Option<u16> {
+        self.cef.effective_remote_devtools_port(self.dev_mode())
     }
 }
 
@@ -824,6 +889,31 @@ impl CefWindow {
 
     pub fn dev_command(mut self, command: impl Into<String>) -> Self {
         self.config.dev_command = Some(command.into());
+        self
+    }
+
+    /// Enables Chrome remote debugging on the given port.
+    ///
+    /// When `dev_url` is configured, remote DevTools are enabled automatically on port 9222.
+    /// Attach from Chrome at `chrome://inspect` or open `http://127.0.0.1:9222`.
+    pub fn debug(mut self, port: u16) -> Self {
+        self.config.cef.remote_devtools_port = Some(port);
+        self.config.cef.remote_devtools_disabled = false;
+        self
+    }
+
+    /// Disables remote DevTools even when `dev_url` is configured.
+    pub fn without_debug(mut self) -> Self {
+        self.config.cef.remote_devtools_disabled = true;
+        self
+    }
+
+    /// Linux CEF only: enable VA-API hardware video decode for WebCodecs/MSE.
+    ///
+    /// Enabled by default on Linux.
+    #[cfg(target_os = "linux")]
+    pub fn vaapi_hardware_decode(mut self, enabled: bool) -> Self {
+        self.config.cef.vaapi_hardware_decode = enabled;
         self
     }
 
@@ -1549,7 +1639,7 @@ fn cef_window_command(
     {
         command.arg("--fenestra-ozone-platform=wayland");
     }
-    apply_common_cef_args(&mut command);
+    apply_cef_launch_args(&mut command, &config.cef, config.dev_mode());
     command.current_dir(&release_dir);
     #[cfg(target_os = "linux")]
     {
